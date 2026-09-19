@@ -43,7 +43,6 @@ import {
   getTaskDependencyState,
 } from "@/lib/tasks";
 import { calculateTeamWorkloads } from "@/lib/workload";
-import { detectEventRisks, getRiskTypeLabel, getSeverityStyle } from "@/lib/risks";
 
 export type EventSectionType =
   | "overview"
