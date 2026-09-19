@@ -580,7 +580,7 @@ export default function Home() {
               <IconUsers className="w-3.5 h-3.5" /> Members
             </span>
             <span className="flex items-center gap-1.5">
-              <IconSparkles className="w-3.5 h-3.5" /> Asky
+              <IconSparkles className="w-3.5 h-3.5" /> Eventra AI
             </span>
           </div>
         </div>
@@ -631,6 +631,9 @@ export default function Home() {
         onOpenJoinClub={() => setIsJoinClubOpen(true)}
         memberCount={displayMemberCount}
         taskCount={openTasksCount > 0 ? openTasksCount : 0}
+        activeEventTitle={activeEvent?.title ?? null}
+        onBackToClubWorkspace={() => setActiveEvent(null)}
+        onSignOut={handleSignOut}
       />
 
       {/* Main Content Area */}
@@ -736,7 +739,7 @@ export default function Home() {
             ) : null}
           </main>
 
-          {/* Right Panel: Asky & Quick Stats */}
+          {/* Right Panel: Eventra AI & Quick Stats */}
           <CopilotSidebar
             eventCount={activeClubEvents.length}
             taskCount={openTasksCount}
@@ -744,6 +747,42 @@ export default function Home() {
             input={copilotInput}
             onInputChange={setCopilotInput}
             onSendPrompt={handleCopilotPrompt}
+            context={{
+              event: activeEvent
+                ? {
+                    id: activeEvent.id,
+                    title: activeEvent.title,
+                    category: activeEvent.category,
+                    date: activeEvent.date,
+                    time: activeEvent.time,
+                    location: activeEvent.location,
+                    status: activeEvent.status,
+                    rsvpCount: activeEvent.rsvpCount,
+                    capacity: activeEvent.capacity,
+                    leadName: activeEvent.leadName,
+                    leadRole: activeEvent.leadRole,
+                    budgetAllocated: activeEvent.budgetAllocated,
+                    budgetSpent: activeEvent.budgetSpent,
+                  }
+                : null,
+              tasks: tasks.map((t) => ({
+                id: t.id,
+                title: t.title,
+                priority: t.priority,
+                dueText: t.dueText,
+                deadline: t.deadline,
+                assigneeName: t.assigneeName,
+                assigneeRole: t.assigneeRole,
+                status: t.status,
+                completed: t.completed,
+              })),
+              teamMembers: activeClubMembers.map((m) => ({
+                id: m.id,
+                name: m.name,
+                role: m.role,
+                email: m.email,
+              })),
+            }}
           />
         </div>
       </div>

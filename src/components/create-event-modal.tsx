@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { ClubEvent } from "./types";
 import { IconX, IconCalendar, IconSparkles, IconPlus } from "./icons";
 import { createEventInSupabase } from "@/lib/events";
+import { formatDisplayDate } from "@/lib/date-utils";
 
 interface CreateEventModalProps {
   isOpen: boolean;
@@ -60,7 +61,7 @@ export function CreateEventModal({
     }
 
     setIsSubmitting(true);
-    setErrorMessage(null);
+    const formattedDate = date.trim() ? formatDisplayDate(date.trim()) : "Upcoming Date";
 
     const { event, error } = await createEventInSupabase(
       {
@@ -68,7 +69,7 @@ export function CreateEventModal({
         title: title.trim(),
         description: description.trim() || undefined,
         category,
-        date: date.trim() || "Upcoming Date",
+        date: formattedDate,
         time: "6:00 PM - 8:00 PM",
         location: location.trim() || "Campus Center",
         capacity: parseInt(capacity, 10) || 100,
@@ -180,12 +181,11 @@ export function CreateEventModal({
                 Target Date
               </label>
               <input
-                type="text"
+                type="date"
                 disabled={isSubmitting}
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                placeholder="e.g. Nov 14, 2026"
-                className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-60"
+                className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-60 cursor-pointer"
               />
             </div>
           </div>

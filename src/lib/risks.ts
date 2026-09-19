@@ -7,14 +7,13 @@ import type {
 } from "@/components/types";
 import { getTaskDependencyState } from "@/lib/tasks";
 import { calculateTeamWorkloads } from "@/lib/workload";
+import { parseDateTimestamp } from "@/lib/date-utils";
 
 /**
  * Parses deadline string into milliseconds timestamp, returns null if invalid.
  */
 function parseDateMs(dateStr?: string | null): number | null {
-  if (!dateStr) return null;
-  const parsed = Date.parse(dateStr);
-  return isNaN(parsed) ? null : parsed;
+  return parseDateTimestamp(dateStr);
 }
 
 /**

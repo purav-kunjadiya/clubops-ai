@@ -1,4 +1,5 @@
 import type { TaskItem, EventTeamMember } from "@/components/types";
+import { isOverdue } from "@/lib/date-utils";
 
 export type WorkloadState = "Low" | "Medium" | "High" | "Overloaded";
 
@@ -52,13 +53,7 @@ export function isTaskOverdue(task: TaskItem, now: Date = new Date()): boolean {
   if (task.completed || task.status === "Done") return false;
 
   const dateStr = task.deadline || task.dueText;
-  if (!dateStr) return false;
-
-  const parsed = Date.parse(dateStr);
-  if (isNaN(parsed)) return false;
-
-  // Compare date timestamp to now
-  return parsed < now.getTime();
+  return isOverdue(dateStr, now);
 }
 
 /**

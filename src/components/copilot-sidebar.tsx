@@ -18,6 +18,13 @@ interface CopilotSidebarProps {
   input: string;
   onInputChange: (val: string) => void;
   onSendPrompt?: (prompt: string) => void;
+  context?: {
+    event?: Record<string, unknown> | null;
+    tasks?: Array<Record<string, unknown>>;
+    teamMembers?: Array<Record<string, unknown>>;
+    workloads?: Array<Record<string, unknown>>;
+    risks?: Array<Record<string, unknown>>;
+  };
 }
 
 export function CopilotSidebar({
@@ -27,34 +34,61 @@ export function CopilotSidebar({
   input,
   onInputChange,
   onSendPrompt,
+  context,
 }: CopilotSidebarProps) {
   const [responseSnippet, setResponseSnippet] = useState<string | null>(null);
+  const [isError, setIsError] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   const suggestionChips = [
+    "What tasks are currently overdue?",
+    "Who has the highest workload?",
+    "What risks should I be aware of?",
     "Summarize club activity",
-    "Create event plan",
-    "Suggest task priorities",
-    "Analyze potential risks",
   ];
 
-  const handleSend = (textToSend?: string) => {
+  const handleSend = async (textToSend?: string) => {
     const text = textToSend || input;
-    if (!text.trim()) return;
+    if (!text.trim() || isLoading) return;
 
     if (onSendPrompt) {
       onSendPrompt(text);
     }
 
     onInputChange("");
-    setResponseSnippet(`Asky is working on "${text}" for your club.`);
-    setTimeout(() => {
-      setResponseSnippet(null);
-    }, 4000);
+    setIsLoading(true);
+    setIsError(false);
+    setResponseSnippet("Eventra AI is thinking...");
+
+    try {
+      const res = await fetch("/api/asky/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: text.trim(),
+          context: context || {},
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setIsError(true);
+        setResponseSnippet(data.error || "Sorry, I couldn't process your question right now.");
+      } else {
+        setIsError(false);
+        setResponseSnippet(data.answer || "No response received.");
+      }
+    } catch {
+      setIsError(true);
+      setResponseSnippet("Network error: Unable to reach Eventra AI service. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
     <aside className="w-full lg:w-80 space-y-6 flex-shrink-0">
-      {/* Card 1: Asky */}
+      {/* Card 1: Eventra AI */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm space-y-4">
         {/* Header */}
         <div className="flex items-start gap-2.5">
@@ -62,7 +96,7 @@ export function CopilotSidebar({
             <IconSparkles className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="text-sm font-bold text-[#1E1B4B]">Asky</h2>
+            <h2 className="text-sm font-bold text-[#1E1B4B]">Eventra AI</h2>
             <p className="text-xs text-slate-500">Your ClubOps AI assistant</p>
           </div>
         </div>
@@ -80,7 +114,7 @@ export function CopilotSidebar({
               type="text"
               value={input}
               onChange={(e) => onInputChange(e.target.value)}
-              placeholder="Ask Asky anything..."
+              placeholder="Ask Eventra AI anything..."
               className="flex-1 bg-transparent px-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none"
             />
             <button
@@ -99,8 +133,17 @@ export function CopilotSidebar({
         </form>
 
         {responseSnippet && (
-          <div className="p-2.5 rounded-xl bg-indigo-50 border border-indigo-100 text-[11px] text-indigo-800 animate-in fade-in">
-            {responseSnippet}
+          <div
+            className={`p-2.5 rounded-xl text-[11px] leading-relaxed animate-in fade-in transition-all ${
+              isError
+                ? "bg-rose-50 border border-rose-200 text-rose-800"
+                : isLoading
+                ? "bg-indigo-50/70 border border-indigo-100 text-indigo-700 flex items-center gap-2"
+                : "bg-indigo-50 border border-indigo-100 text-indigo-900 whitespace-pre-wrap max-h-60 overflow-y-auto"
+            }`}
+          >
+            {isLoading && <IconSparkles className="w-3.5 h-3.5 text-indigo-600 animate-spin flex-shrink-0" />}
+            <span>{responseSnippet}</span>
           </div>
         )}
 

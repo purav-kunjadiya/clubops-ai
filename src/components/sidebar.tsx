@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
 import type { Club } from "./types";
 import {
@@ -13,6 +14,8 @@ import {
   IconCheck,
   IconArrowRight,
   IconX,
+  IconLogOut,
+  IconArrowLeft,
 } from "./icons";
 
 interface SidebarProps {
@@ -29,6 +32,9 @@ interface SidebarProps {
   onOpenJoinClub?: () => void;
   memberCount?: number;
   taskCount?: number;
+  activeEventTitle?: string | null;
+  onBackToClubWorkspace?: () => void;
+  onSignOut?: () => void;
 }
 
 export function Sidebar({
@@ -45,6 +51,9 @@ export function Sidebar({
   onOpenJoinClub,
   memberCount = 0,
   taskCount = 0,
+  activeEventTitle = null,
+  onBackToClubWorkspace,
+  onSignOut,
 }: SidebarProps) {
   const [isSwitcherOpen, setIsSwitcherOpen] = useState(false);
 
@@ -76,26 +85,72 @@ export function Sidebar({
         }`}
       >
         {/* Brand Header */}
-        <div className="px-5 py-6 flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-bold text-[#1E1B4B] tracking-tight">ClubOps</span>
-              <span className="px-1.5 py-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-100/80 rounded-full">
-                AI
-              </span>
+        <div className="px-5 py-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="relative w-9 h-9 rounded-xl overflow-hidden border border-indigo-100 shadow-2xs flex-shrink-0 bg-white">
+              <Image
+                src="/clubops-logo.png"
+                alt="ClubOps AI Logo"
+                fill
+                sizes="36px"
+                className="object-contain p-0.5"
+                priority
+              />
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">Campus Club OS</p>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-base font-bold text-[#1E1B4B] tracking-tight">ClubOps</span>
+                <span className="px-1.5 py-0.5 text-[9px] font-bold text-indigo-700 bg-indigo-100/80 rounded-full">
+                  AI
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">Campus Club OS</p>
+            </div>
           </div>
 
           <button
             type="button"
             onClick={onCloseMobile}
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg lg:hidden"
+            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg lg:hidden cursor-pointer"
             aria-label="Close Sidebar"
           >
             <IconX className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Active Workspace State Banner (Club vs Event Workspace) */}
+        {activeEventTitle ? (
+          <div className="mx-3 mb-2 p-2.5 rounded-xl bg-indigo-50/80 border border-indigo-100/90 text-left space-y-1 animate-in fade-in">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+                Event Workspace
+              </span>
+              {onBackToClubWorkspace && (
+                <button
+                  type="button"
+                  onClick={onBackToClubWorkspace}
+                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 hover:text-indigo-900 cursor-pointer"
+                  title="Return to Club Workspace"
+                >
+                  <IconArrowLeft className="w-3 h-3" />
+                  <span>Club</span>
+                </button>
+              )}
+            </div>
+            <p className="text-xs font-bold text-[#1E1B4B] truncate">
+              {activeEventTitle}
+            </p>
+          </div>
+        ) : activeClub ? (
+          <div className="mx-3 mb-2 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200/60 flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+              Club Workspace
+            </span>
+            <span className="text-[11px] font-bold text-[#1E1B4B] truncate max-w-[110px]">
+              {activeClub.name}
+            </span>
+          </div>
+        ) : null}
 
         {/* Navigation Items */}
         <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
@@ -222,6 +277,21 @@ export function Sidebar({
                   <span>Join Club</span>
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Logout Action in Sidebar */}
+          {onSignOut && (
+            <div className="pt-2 border-t border-slate-100 mt-2">
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-600 hover:text-rose-600 hover:bg-rose-50/60 transition-colors cursor-pointer"
+                title="Log out of ClubOps AI"
+              >
+                <IconLogOut className="w-3.5 h-3.5" />
+                <span>Log out</span>
+              </button>
             </div>
           )}
         </div>

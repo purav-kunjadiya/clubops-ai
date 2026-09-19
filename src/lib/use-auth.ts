@@ -68,13 +68,21 @@ export function useAuth() {
       return;
     }
 
-    // Supabase may require email confirmation; if so, user will be null
+    // When Supabase email confirmation is enabled, session is null and identities might be empty if already exists
+    if (!data.session) {
+      // Account created but email confirmation is pending
+      setState({
+        user: null,
+        loading: false,
+        error: "Verification email sent. Please verify your email before logging in.",
+      });
+      return;
+    }
+
     setState({
-      user: data.user ?? null,
+      user: data.user,
       loading: false,
-      error: data.user
-        ? null
-        : "Check your email to confirm your account before signing in.",
+      error: null,
     });
   }, []);
 

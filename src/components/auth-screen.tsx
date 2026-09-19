@@ -1,7 +1,7 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
-import { IconSparkles } from "@/components/icons";
 
 interface AuthScreenProps {
   onSignIn: (email: string, password: string) => Promise<void>;
@@ -65,13 +65,16 @@ export function AuthScreen({
       <div className="max-w-md w-full space-y-8">
 
         {/* Brand header */}
-        <div className="text-center space-y-5">
-          <div className="relative w-14 h-14 mx-auto">
-            <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-indigo-50 to-[#EDE9FE] flex items-center justify-center border border-indigo-100/60">
-              <IconSparkles className="w-6 h-6 text-indigo-600" />
-            </div>
-            <span className="absolute -top-1 left-2.5 w-1.5 h-1.5 rounded-full bg-indigo-300 animate-pulse" />
-            <span className="absolute -top-1 right-2.5 w-1.5 h-1.5 rounded-full bg-purple-300 animate-pulse" />
+        <div className="text-center space-y-4">
+          <div className="relative w-16 h-16 mx-auto rounded-2xl bg-white border border-indigo-100/80 shadow-sm p-1.5 overflow-hidden">
+            <Image
+              src="/clubops-logo.png"
+              alt="ClubOps AI Logo"
+              fill
+              sizes="64px"
+              className="object-contain p-1"
+              priority
+            />
           </div>
 
           <div className="space-y-1">
@@ -121,10 +124,27 @@ export function AuthScreen({
             </button>
           </div>
 
-          {/* Error message */}
+          {/* Notice or Error message */}
           {displayError && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium animate-in fade-in">
-              {displayError}
+            <div
+              className={`p-3.5 rounded-xl text-xs font-medium animate-in fade-in ${
+                displayError.toLowerCase().includes("verify") ||
+                displayError.toLowerCase().includes("sent") ||
+                displayError.toLowerCase().includes("confirm")
+                  ? "bg-indigo-50 border border-indigo-200 text-indigo-900"
+                  : "bg-rose-50 border border-rose-200 text-rose-700"
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <span className="font-bold shrink-0">
+                  {displayError.toLowerCase().includes("verify") ||
+                  displayError.toLowerCase().includes("sent") ||
+                  displayError.toLowerCase().includes("confirm")
+                    ? "ℹ"
+                    : "✕"}
+                </span>
+                <span className="leading-relaxed">{displayError}</span>
+              </div>
             </div>
           )}
 

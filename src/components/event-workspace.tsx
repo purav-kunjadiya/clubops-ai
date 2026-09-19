@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import type {
   Club,
   ClubEvent,
@@ -28,6 +28,7 @@ import {
   IconX,
   IconChevronDown,
   IconAlertTriangle,
+  IconSend,
 } from "./icons";
 import {
   fetchEventTeam,
@@ -43,6 +44,8 @@ import {
   getTaskDependencyState,
 } from "@/lib/tasks";
 import { calculateTeamWorkloads } from "@/lib/workload";
+import { detectEventRisks } from "@/lib/risks";
+import { formatDisplayDate } from "@/lib/date-utils";
 
 export type EventSectionType =
   | "overview"
@@ -245,6 +248,163 @@ export function EventWorkspace({
     () => calculateTeamWorkloads(teamMembers, eventTasks),
     [teamMembers, eventTasks]
   );
+
+  // Derived risks for this event
+  const detectedRisks = useMemo(
+    () => detectEventRisks(event.id, eventTasks, teamMembers),
+    [event.id, eventTasks, teamMembers]
+  );
+
+  // Eventra AI Chat state for Event Workspace -> AI Tab
+  const [askyInput, setAskyInput] = useState("");
+  const [isAskyThinking, setIsAskyThinking] = useState(false);
+  const askyCounterRef = useRef(100);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const [askyMessages, setAskyMessages] = useState<
+    Array<{
+      id: string;
+      sender: "ai" | "user";
+      text: string;
+      time: string;
+      isError?: boolean;
+    }>
+  >([
+    {
+      id: "asky-welcome",
+      sender: "ai",
+      text: `Hello! I'm Eventra AI, your ClubOps operational AI assistant for "${event.title}". Ask me about overdue tasks, team workload, upcoming deadlines, or active risks!`,
+      time: "Just now",
+    },
+  ]);
+
+  // Auto-scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [askyMessages, isAskyThinking]);
+
+  const handleSendAsky = async (customPrompt?: string) => {
+    const text = customPrompt || askyInput;
+    if (!text.trim() || isAskyThinking) return;
+
+    askyCounterRef.current += 1;
+    const userMsg = {
+      id: `asky-u-${askyCounterRef.current}`,
+      sender: "user" as const,
+      text: text.trim(),
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    setAskyMessages((prev) => [...prev, userMsg]);
+    setAskyInput("");
+    setIsAskyThinking(true);
+
+    // Format workloads array
+    const workloadList = teamMembers.map((m) => {
+      const w = teamWorkloads.get(m.id);
+      return {
+        memberName: m.name,
+        activeCount: w?.activeCount ?? 0,
+        completedCount: w?.completedCount ?? 0,
+        overdueCount: w?.overdueCount ?? 0,
+        workloadState: w?.workloadState ?? ("Low" as const),
+      };
+    });
+
+    try {
+      const res = await fetch("/api/asky/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: text.trim(),
+          context: {
+            event: {
+              id: event.id,
+              title: event.title,
+              category: event.category,
+              date: event.date,
+              time: event.time,
+              location: event.location,
+              status: event.status,
+              rsvpCount: event.rsvpCount,
+              capacity: event.capacity,
+              leadName: event.leadName,
+              leadRole: event.leadRole,
+              budgetAllocated: event.budgetAllocated,
+              budgetSpent: event.budgetSpent,
+            },
+            tasks: eventTasks.map((t) => ({
+              id: t.id,
+              title: t.title,
+              priority: t.priority,
+              dueText: t.dueText,
+              deadline: t.deadline,
+              assigneeName: t.assigneeName,
+              assigneeRole: t.assigneeRole,
+              status: t.status,
+              completed: t.completed,
+            })),
+            teamMembers: teamMembers.map((m) => ({
+              id: m.id,
+              name: m.name,
+              role: m.role,
+              email: m.email,
+            })),
+            workloads: workloadList,
+            risks: detectedRisks.map((r) => ({
+              id: r.id,
+              type: r.type,
+              title: r.title,
+              severity: r.severity,
+              description: r.description,
+              evidence: r.evidence,
+            })),
+          },
+        }),
+      });
+
+      const data = await res.json();
+      askyCounterRef.current += 1;
+
+      if (!res.ok || data.error) {
+        const errorText = data.error || "Failed to receive an answer from Eventra AI. Please try again.";
+        setAskyMessages((prev) => [
+          ...prev,
+          {
+            id: `asky-err-${askyCounterRef.current}`,
+            sender: "ai",
+            text: errorText,
+            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            isError: true,
+          },
+        ]);
+      } else {
+        setAskyMessages((prev) => [
+          ...prev,
+          {
+            id: `asky-ai-${askyCounterRef.current}`,
+            sender: "ai",
+            text: data.answer || "No response received.",
+            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        ]);
+      }
+    } catch {
+      askyCounterRef.current += 1;
+      const networkErr = "Network error: Unable to contact Eventra AI service. Please check your connection.";
+      setAskyMessages((prev) => [
+        ...prev,
+        {
+          id: `asky-err-${askyCounterRef.current}`,
+          sender: "ai",
+          text: networkErr,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          isError: true,
+        },
+      ]);
+    } finally {
+      setIsAskyThinking(false);
+    }
+  };
 
   const getRoleBadgeColor = (role: string) => {
     switch (role) {
@@ -494,7 +654,7 @@ export function EventWorkspace({
     { id: "meetings", label: "Meetings", icon: IconVideo },
     { id: "documents", label: "Documents", icon: IconFileText },
     { id: "risks", label: "Risks", icon: IconShieldAlert },
-    { id: "ai", label: "Asky", icon: IconSparkles },
+    { id: "ai", label: "Eventra AI", icon: IconSparkles },
   ];
 
   const openEventTasksCount = eventTasks.filter((t) => !t.completed && t.status !== "Done").length;
@@ -530,6 +690,8 @@ export function EventWorkspace({
     setTaskActionError(null);
     setIsCreatingTask(true);
 
+    const formattedDeadline = formatDisplayDate(taskDeadline.trim());
+
     const { task: createdTask, error } = await createEventTaskInSupabase(
       {
         clubId: event.clubId || club?.id || "",
@@ -537,8 +699,8 @@ export function EventWorkspace({
         title: taskTitle.trim(),
         eventTag: event.title,
         priority: taskPriority,
-        dueText: taskDeadline.trim(),
-        deadline: taskDeadline.trim(),
+        dueText: formattedDeadline,
+        deadline: formattedDeadline,
         assigneeName,
         assigneeRole,
         assigneeMemberId,
@@ -1402,19 +1564,150 @@ export function EventWorkspace({
       )}
 
       {activeSection === "ai" && (
-        <div className="bg-white rounded-3xl border border-dashed border-slate-200 p-12 text-center space-y-3 shadow-sm">
-          <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
-            <IconSparkles className="w-6 h-6" />
+        <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col min-h-[560px]">
+          {/* Section Top Header */}
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center border border-indigo-100/80 shadow-xs">
+                <IconSparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-[#1E1B4B]">Eventra AI</h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
+                    Event Operational Copilot
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Context: {event.title} · {eventTasks.length} tasks · {teamMembers.length} team members · {detectedRisks.length} active risks
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-[11px] font-medium text-slate-600">Gemini Integrated</span>
+            </div>
           </div>
-          <div className="space-y-1">
-            <h3 className="text-sm font-bold text-[#1E1B4B]">AI Event Assistant</h3>
-            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-              AI run-of-show generator, timeline optimizer, and autonomous event coordinator will be available here.
+
+          {/* Quick Prompt Chips */}
+          <div className="px-6 py-3 border-b border-slate-100 bg-slate-50/30">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
+              Operational Inquiries
             </p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                "What tasks are currently overdue?",
+                "Who has the highest workload?",
+                "What risks should I be aware of?",
+                "Summarize upcoming task deadlines",
+              ].map((chip) => (
+                <button
+                  key={chip}
+                  type="button"
+                  onClick={() => handleSendAsky(chip)}
+                  className="px-3 py-1.5 rounded-xl text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:border-indigo-400 hover:text-indigo-600 transition-all cursor-pointer shadow-2xs"
+                >
+                  {chip}
+                </button>
+              ))}
+            </div>
           </div>
-          <span className="inline-block px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
-            Coming next
-          </span>
+
+          {/* Chat Messages Feed */}
+          <div className="flex-1 p-6 space-y-4 overflow-y-auto max-h-[460px]">
+            {askyMessages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex flex-col ${
+                  msg.sender === "user" ? "items-end" : "items-start"
+                }`}
+              >
+                <div
+                  className={`max-w-[85%] p-4 rounded-2xl text-xs leading-relaxed ${
+                    msg.sender === "user"
+                      ? "bg-indigo-600 text-white rounded-br-none shadow-sm"
+                      : msg.isError
+                      ? "bg-rose-50 border border-rose-200 text-rose-800 rounded-bl-none shadow-2xs font-medium"
+                      : "bg-slate-50 border border-slate-200/80 text-slate-800 rounded-bl-none shadow-2xs"
+                  }`}
+                >
+                  {msg.sender === "ai" && (
+                    <div className="flex items-center gap-1.5 mb-1.5 text-[11px] font-semibold text-indigo-600">
+                      <IconSparkles className="w-3.5 h-3.5" />
+                      <span>Eventra AI</span>
+                    </div>
+                  )}
+                  {msg.sender === "user" ? (
+                    <div className="whitespace-pre-wrap">{msg.text}</div>
+                  ) : (
+                    <div
+                      className="whitespace-pre-wrap [&_strong]:font-semibold"
+                      dangerouslySetInnerHTML={{
+                        __html: msg.text
+                          .replace(/&/g, "&amp;")
+                          .replace(/</g, "&lt;")
+                          .replace(/>/g, "&gt;")
+                          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+                          .replace(/\*(.+?)\*/g, "<em>$1</em>"),
+                      }}
+                    />
+                  )}
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 px-1">
+                  {msg.time}
+                </span>
+              </div>
+            ))}
+
+            {isAskyThinking && (
+              <div className="flex flex-col items-start animate-in fade-in duration-200">
+                <div className="max-w-[85%] p-4 rounded-2xl bg-indigo-50/60 border border-indigo-100 text-indigo-900 rounded-bl-none shadow-2xs">
+                  <div className="flex items-center gap-2 mb-1 text-[11px] font-semibold text-indigo-700">
+                    <IconSparkles className="w-3.5 h-3.5 animate-spin" />
+                    <span>Eventra AI is thinking...</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 py-1">
+                    <span className="w-2 h-2 rounded-full bg-indigo-600 animate-bounce" />
+                    <span className="w-2 h-2 rounded-full bg-cyan-500 animate-bounce [animation-delay:0.2s]" />
+                    <span className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce [animation-delay:0.4s]" />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Chat Form Input Box */}
+          <div className="p-4 border-t border-slate-100 bg-white">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSendAsky();
+              }}
+              className="flex items-center gap-2"
+            >
+              <input
+                type="text"
+                value={askyInput}
+                onChange={(e) => setAskyInput(e.target.value)}
+                placeholder={`Ask Eventra AI about ${event.title}...`}
+                className="flex-1 px-4 py-2.5 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 transition-all placeholder:text-slate-400"
+              />
+              <button
+                type="submit"
+                disabled={!askyInput.trim() || isAskyThinking}
+                className={`p-2.5 rounded-xl transition-all ${
+                  askyInput.trim() && !isAskyThinking
+                    ? "bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer shadow-sm"
+                    : "bg-slate-100 text-slate-400 cursor-not-allowed"
+                }`}
+                aria-label="Send message to Eventra AI"
+              >
+                <IconSend className="w-4 h-4" />
+              </button>
+            </form>
+          </div>
         </div>
       )}
 
@@ -1671,12 +1964,11 @@ export function EventWorkspace({
                   Deadline <span className="text-rose-500">*</span>
                 </label>
                 <input
-                  type="text"
+                  type="date"
                   required
                   value={taskDeadline}
                   onChange={(e) => setTaskDeadline(e.target.value)}
-                  placeholder="e.g. Oct 24, 2026 or Friday, 4:00 PM"
-                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 transition-colors"
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 transition-colors cursor-pointer"
                 />
               </div>
 

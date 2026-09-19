@@ -43,9 +43,16 @@ export function ClubHeader({
             <h1 className="text-xl sm:text-2xl font-bold text-[#1E1B4B] tracking-tight truncate">
               {club.name}
             </h1>
-            <p className="text-xs font-medium text-slate-500">
-              Alpha Campus · {memberCount} {memberCount === 1 ? "Member" : "Members"}
-            </p>
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              <span className="text-xs font-medium text-slate-500">
+                Alpha Campus · {memberCount} {memberCount === 1 ? "Member" : "Members"}
+              </span>
+              <span className="text-slate-300">·</span>
+              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-indigo-50 border border-indigo-100 text-[11px] font-mono text-indigo-800">
+                <span className="font-sans font-semibold text-[10px] text-indigo-600 uppercase">Code:</span>
+                <span className="font-bold">{club.code}</span>
+              </div>
+            </div>
             <p className="text-xs text-slate-600 leading-relaxed max-w-xl">
               {club.description || "No description provided."}
             </p>

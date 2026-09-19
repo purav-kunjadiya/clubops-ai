@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { IconSearch, IconBell, IconMenu, IconLogOut } from "./icons";
 
 interface HeaderProps {
@@ -18,16 +19,29 @@ export function Header({
   onSignOut,
 }: HeaderProps) {
   return (
-    <header className="flex items-center justify-between gap-4 py-3 px-4 sm:px-6 bg-transparent">
-      {/* Mobile Menu Icon */}
-      <button
-        type="button"
-        onClick={onOpenMobileMenu}
-        className="p-2 text-slate-600 hover:text-slate-900 rounded-xl hover:bg-slate-100 lg:hidden"
-        aria-label="Open navigation"
-      >
-        <IconMenu className="w-5 h-5" />
-      </button>
+    <header className="flex items-center justify-between gap-3 sm:gap-4 py-3 px-4 sm:px-6 bg-transparent">
+      {/* Mobile Menu Icon & Brand Logo for smaller screens */}
+      <div className="flex items-center gap-2 lg:hidden">
+        <button
+          type="button"
+          onClick={onOpenMobileMenu}
+          className="p-2 text-slate-600 hover:text-slate-900 rounded-xl hover:bg-slate-100 cursor-pointer"
+          aria-label="Open navigation"
+        >
+          <IconMenu className="w-5 h-5" />
+        </button>
+
+        <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-indigo-100 shadow-2xs bg-white flex-shrink-0">
+          <Image
+            src="/clubops-logo.png"
+            alt="ClubOps AI"
+            fill
+            sizes="32px"
+            className="object-contain p-0.5"
+            priority
+          />
+        </div>
+      </div>
 
       {/* Global Search Bar */}
       <div className="relative flex-1 max-w-2xl">

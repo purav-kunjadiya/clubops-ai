@@ -10,11 +10,20 @@ import {
   IconExternalLink,
 } from "./icons";
 
+interface CopilotContextProps {
+  event?: Record<string, unknown> | null;
+  tasks?: Array<Record<string, unknown>>;
+  teamMembers?: Array<Record<string, unknown>>;
+  workloads?: Array<Record<string, unknown>>;
+  risks?: Array<Record<string, unknown>>;
+}
+
 interface CopilotPanelProps {
   isOpen: boolean;
   onClose: () => void;
   input: string;
   onInputChange: (val: string) => void;
+  context?: CopilotContextProps;
 }
 
 interface Message {
@@ -24,6 +33,7 @@ interface Message {
   time: string;
   tags?: string[];
   actionSuggestion?: string;
+  isError?: boolean;
 }
 
 export function CopilotPanel({
@@ -31,13 +41,15 @@ export function CopilotPanel({
   onClose,
   input,
   onInputChange,
+  context,
 }: CopilotPanelProps) {
   const counterRef = useRef(10);
+  const [isLoading, setIsLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "m-1",
       sender: "ai",
-      text: "Hello! I'm Asky, your ClubOps AI assistant. I can help you manage events, tasks, and club operations. What would you like to work on?",
+      text: "Hello! I'm Eventra AI, your ClubOps AI assistant. I can help you manage events, tasks, and club operations. What would you like to work on?",
       time: "10:30 AM",
       tags: ["Campus Safety", "Budget Audit"],
       actionSuggestion: "Would you like me to draft the permit justification letter for Student Activities?",
@@ -45,39 +57,73 @@ export function CopilotPanel({
   ]);
 
   const suggestedPrompts = [
-    "Draft sound permit appeal to Student Life",
-    "Generate 36h Hackathon Run-of-Show schedule",
-    "Reallocate $350 marketing surplus to catering",
-    "Draft sponsor thank-you email to GitHub",
+    "What tasks are currently overdue?",
+    "Who has the highest workload?",
+    "Check event permit checklist",
+    "Draft budget allocation summary",
   ];
 
-  const handleSend = (textToSend?: string) => {
+  const handleSend = async (textToSend?: string) => {
     const text = textToSend || input;
-    if (!text.trim()) return;
+    if (!text.trim() || isLoading) return;
 
     counterRef.current += 1;
     const userMsg: Message = {
       id: `u-${counterRef.current}`,
       sender: "user",
-      text,
+      text: text.trim(),
       time: "Just now",
     };
 
     setMessages((prev) => [...prev, userMsg]);
     onInputChange("");
+    setIsLoading(true);
 
-    // Simulate mock intelligent assistant response
-    setTimeout(() => {
+    try {
+      const response = await fetch("/api/asky/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: text.trim(),
+          context: context || {},
+        }),
+      });
+
+      const data = await response.json();
       counterRef.current += 1;
-      const aiReply: Message = {
-        id: `ai-${counterRef.current}`,
+
+      if (!response.ok || data.error) {
+        const errorMsg: Message = {
+          id: `ai-err-${counterRef.current}`,
+          sender: "ai",
+          text: data.error || "Sorry, I encountered an issue processing that. Please try again.",
+          time: "Just now",
+          isError: true,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+      } else {
+        const aiReply: Message = {
+          id: `ai-${counterRef.current}`,
+          sender: "ai",
+          text: data.answer || "No response received.",
+          time: "Just now",
+          tags: data.usedFallback ? ["Operational Heuristics"] : ["Gemini Live"],
+        };
+        setMessages((prev) => [...prev, aiReply]);
+      }
+    } catch {
+      counterRef.current += 1;
+      const networkErrorMsg: Message = {
+        id: `ai-err-${counterRef.current}`,
         sender: "ai",
-        text: `Got it! I'm reviewing the club parameters for "${text}". I have cross-referenced the Student Union guidelines and our treasury sheets. In full integration mode, I will automatically execute this action with your co-officers.`,
+        text: "Network error: Unable to connect to Eventra AI service. Please check your connection and try again.",
         time: "Just now",
-        tags: ["Action Queued", "Verified with Guidelines"],
+        isError: true,
       };
-      setMessages((prev) => [...prev, aiReply]);
-    }, 600);
+      setMessages((prev) => [...prev, networkErrorMsg]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   if (!isOpen) {
@@ -94,7 +140,7 @@ export function CopilotPanel({
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <h2 className="text-xs font-bold text-white">Asky</h2>
+              <h2 className="text-xs font-bold text-white">Eventra AI</h2>
               <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
                 Gemini 1.5
               </span>
@@ -109,7 +155,7 @@ export function CopilotPanel({
         <button
           onClick={onClose}
           className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
-          aria-label="Close Asky Panel"
+          aria-label="Close Eventra AI Panel"
         >
           <IconX className="w-4 h-4" />
         </button>
@@ -155,7 +201,7 @@ export function CopilotPanel({
                   <span>ClubOps Sentinel</span>
                 </div>
               )}
-              <p className="whitespace-pre-wrap">{m.text}</p>
+              <p className={`whitespace-pre-wrap ${m.isError ? "text-rose-300 font-medium" : ""}`}>{m.text}</p>
 
               {m.tags && (
                 <div className="mt-2 flex flex-wrap gap-1">
@@ -189,6 +235,22 @@ export function CopilotPanel({
             </span>
           </div>
         ))}
+
+        {isLoading && (
+          <div className="flex flex-col items-start animate-in fade-in duration-200">
+            <div className="max-w-[90%] p-3.5 rounded-2xl bg-slate-900/90 border border-slate-800 text-slate-200 rounded-bl-none shadow-sm">
+              <div className="flex items-center gap-1.5 mb-1 text-[10px] font-semibold text-indigo-400">
+                <IconSparkles className="w-3 h-3 animate-spin" />
+                <span>Eventra AI is thinking...</span>
+              </div>
+              <div className="flex items-center gap-1.5 py-1">
+                <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" />
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce [animation-delay:0.2s]" />
+                <span className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce [animation-delay:0.4s]" />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Interactive Input Box */}
@@ -213,7 +275,7 @@ export function CopilotPanel({
               type="text"
               value={input}
               onChange={(e) => onInputChange(e.target.value)}
-              placeholder="Ask Asky anything..."
+              placeholder="Ask Eventra AI anything..."
               className="flex-1 bg-transparent px-2 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none"
             />
 
@@ -225,7 +287,7 @@ export function CopilotPanel({
                   ? "bg-indigo-600 hover:bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)] cursor-pointer"
                   : "bg-slate-800 text-slate-500 cursor-not-allowed"
               }`}
-              aria-label="Send message to Asky"
+              aria-label="Send message to Eventra AI"
             >
               <IconSend className="w-3.5 h-3.5" />
             </button>
