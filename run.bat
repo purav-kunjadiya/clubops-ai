@@ -1,0 +1,3 @@
+@echo off
+echo Starting ClubOps AI Development Server...
+npm run dev
