@@ -13,7 +13,6 @@ import {
 } from "@/lib/agent";
 import { calculateTeamWorkloads } from "@/lib/workload";
 import { detectEventRisks } from "@/lib/risks";
-import { fetchEventTasks } from "@/lib/tasks";
 import { AgentApprovalCard } from "./agent-approval-card";
 
 interface MessageItem {
@@ -28,6 +27,7 @@ interface MessageItem {
   functionCalls?: Record<string, unknown>[];
   modelParts?: unknown[];
   promptText?: string;
+  suggestions?: string[];
 }
 
 interface EventraDrawerProps {
@@ -40,6 +40,46 @@ interface EventraDrawerProps {
   eventTasks: TaskItem[];
   onTasksUpdated: () => void;
   initialPrompt?: string;
+}
+
+function generateFollowUpSuggestions(prompt: string, answerText: string): string[] {
+  const p = prompt.toLowerCase();
+  const a = answerText.toLowerCase();
+
+  if (p.includes("overdue") || a.includes("overdue")) {
+    return [
+      "Who is assigned to overdue tasks?",
+      "What should we prioritize first?",
+      "Create a task to resolve this",
+    ];
+  }
+  if (p.includes("workload") || a.includes("workload") || a.includes("overloaded")) {
+    return [
+      "Who has the most active tasks?",
+      "How can we rebalance the team?",
+      "Show all team members",
+    ];
+  }
+  if (p.includes("risk") || a.includes("risk")) {
+    return [
+      "Which risk is most critical?",
+      "How do we mitigate these risks?",
+      "Create a safety task",
+    ];
+  }
+  if (p.includes("plan") || p.includes("fest") || p.includes("create")) {
+    return [
+      "What tasks should we assign next?",
+      "Check our event schedule",
+      "Show team workload summary",
+    ];
+  }
+
+  return [
+    "What tasks are currently overdue?",
+    "Who has the highest workload?",
+    "What risks should I be aware of?",
+  ];
 }
 
 export function EventraDrawer({
@@ -68,7 +108,20 @@ export function EventraDrawer({
     [eventTasks, teamMembers, event]
   );
 
-  const [messages, setMessages] = useState<MessageItem[]>([]);
+  const [messages, setMessages] = useState<MessageItem[]>([
+    {
+      id: "msg-init-0",
+      sender: "ai",
+      text: "Hi! I'm **Eventra AI**, your event management assistant.\n\nI can help you manage tasks, team workload, risks, meetings, and event planning.",
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      suggestions: [
+        "What tasks are currently overdue?",
+        "Who has the highest workload?",
+        "What risks should I be aware of?",
+        "What should we focus on today?",
+      ],
+    },
+  ]);
 
   // Handle Escape key to close drawer
   useEffect(() => {
@@ -130,11 +183,17 @@ export function EventraDrawer({
         };
       });
 
+      const conversationHistory = messages.map((m) => ({
+        role: m.sender === "user" ? "user" : "model",
+        text: m.text,
+      }));
+
       const res = await fetch("/api/asky/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: promptText,
+          history: conversationHistory,
           context: {
             event: {
               id: event.id,
@@ -190,32 +249,35 @@ export function EventraDrawer({
 
       const activePlan = data.proposedPlan || undefined;
       const hasPlan = !!activePlan && activePlan.actions?.length > 0;
+      const responseText = data.answer || (hasPlan ? "Here is your proposed action plan:" : "Here is your operational summary:");
+      const suggestions = generateFollowUpSuggestions(promptText, responseText);
 
       setMessages((prev) => [
         ...prev,
         {
           id: `msg-ai-${counterRef.current}`,
           sender: "ai",
-          text: data.answer || (hasPlan ? "Here is your proposed action plan:" : "Here is your operational summary:"),
+          text: responseText,
           time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           plan: activePlan,
           executionStatus: hasPlan ? "proposed" : undefined,
           functionCalls: data.functionCalls,
           modelParts: data.modelParts,
           promptText,
+          suggestions,
         },
       ]);
-    } catch (err: unknown) {
+    } catch {
       counterRef.current += 1;
-      const errMsg = err instanceof Error ? err.message : "Unable to complete request right now. Please try again.";
       setMessages((prev) => [
         ...prev,
         {
           id: `msg-err-${counterRef.current}`,
           sender: "ai",
-          text: `### Issue Detected\n\n${errMsg}\n\n**Next step:** Try resubmitting your request or check your connection.`,
+          text: "Something went wrong while checking that. Please try again.",
           time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           isError: true,
+          promptText,
         },
       ]);
     } finally {
@@ -250,130 +312,80 @@ export function EventraDrawer({
         existingTasks: eventTasks,
       });
 
-      const successCount = resultPlan.actions.filter((a) => a.result?.success).length;
+      onTasksUpdated();
 
-      // Re-fetch tasks from Supabase to update workspace in real-time
-      const { tasks: updatedTasks } = await fetchEventTasks(event.id);
-      if (updatedTasks) {
-        onTasksUpdated();
-      }
+      // Trigger Turn 2: Send tool results back to Gemini for final response synthesis
+      const executedResults = resultPlan.actions.map((act) => ({
+        name: act.type.toLowerCase(),
+        result: {
+          actionId: act.id,
+          status: act.status,
+          description: act.description,
+        },
+      }));
 
-      // TURN 2: Send tool results BACK to Gemini to generate final response based on DB execution
-      let turn2AnswerText = "";
-      if (targetMsg?.functionCalls && targetMsg.functionCalls.length > 0) {
-        try {
-          const toolResults = resultPlan.actions.map((act) => {
-            let toolName = "tool_create_event";
-            if (act.type === "CREATE_TASK") toolName = "tool_create_task";
-            else if (act.type === "ASSIGN_TASK") toolName = "tool_assign_task";
-            else if (act.type === "UPDATE_EVENT_FIELD") toolName = "tool_update_event";
-            else if (act.type === "UPDATE_TASK_FIELD") toolName = "tool_update_task";
-            else if (act.type === "CREATE_TASK_DEPENDENCY") toolName = "tool_create_dependency";
+      const res = await fetch("/api/asky/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: targetMsg?.promptText || "Action executed",
+          context: {
+            event,
+            tasks: eventTasks,
+            teamMembers,
+          },
+          previousFunctionCalls: targetMsg?.functionCalls,
+          modelParts: targetMsg?.modelParts,
+          toolResults: executedResults,
+        }),
+      });
 
-            return {
-              name: toolName,
-              result: act.result,
-            };
-          });
-
-          const turn2Res = await fetch("/api/asky/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              prompt: targetMsg.promptText || plan.userRequest,
-              context: {
-                event: {
-                  id: event.id,
-                  title: event.title,
-                  category: event.category,
-                  date: event.date,
-                  time: event.time,
-                  location: event.location,
-                  status: event.status,
-                  rsvpCount: event.rsvpCount,
-                  capacity: event.capacity,
-                },
-                tasks: eventTasks.map((t) => ({
-                  id: t.id,
-                  title: t.title,
-                  priority: t.priority,
-                  assigneeName: t.assigneeName,
-                  status: t.status,
-                })),
-                teamMembers: teamMembers.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  role: m.role,
-                })),
-              },
-              previousFunctionCalls: targetMsg.functionCalls,
-              modelParts: targetMsg.modelParts,
-              toolResults,
-            }),
-          });
-
-          const turn2Data = await turn2Res.json();
-          if (turn2Data.answer) {
-            turn2AnswerText = turn2Data.answer;
-          }
-        } catch (turn2Err) {
-          console.warn("Turn 2 Gemini summary error:", turn2Err);
-        }
-      }
-
-      const isEventCreate = plan.intent === "CREATE_EVENT";
-      const isTaskCreate = plan.intent === "CREATE_TASKS";
-
-      let executionResultText = `Done — ${successCount} action(s) persisted to Supabase database.`;
-      if (isEventCreate) {
-        executionResultText = `Done — Event workspace created and synced to database.`;
-      } else if (isTaskCreate) {
-        executionResultText = `Done — ${successCount} task(s) added and assigned in database.`;
-      }
+      const data = await res.json();
+      const finalAnswer = data.answer || "Actions executed successfully!";
 
       setMessages((prev) =>
         prev.map((m) =>
           m.id === msgId
             ? {
                 ...m,
-                text: turn2AnswerText || m.text,
                 executionStatus: "completed",
-                executionResultText,
+                executionResultText: finalAnswer,
               }
             : m
         )
       );
     } catch (err: unknown) {
-      console.error("Plan execution error:", err);
+      const errMsg = err instanceof Error ? err.message : "Execution failed";
       setMessages((prev) =>
-        prev.map((m) => (m.id === msgId ? { ...m, executionStatus: "failed" } : m))
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                executionStatus: "failed",
+                executionResultText: `Execution failed: ${errMsg}`,
+              }
+            : m
+        )
       );
     }
   };
 
   const handleRejectPlan = (msgId: string) => {
     setMessages((prev) =>
-      prev.map((m) =>
-        m.id === msgId
-          ? {
-              ...m,
-              executionStatus: undefined,
-              plan: undefined,
-              text: m.text + "\n\n*(Proposed plan cancelled by user)*",
-            }
-          : m
-      )
+      prev.map((m) => (m.id === msgId ? { ...m, executionStatus: "failed" } : m))
     );
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[400px] lg:w-[420px] bg-white border-l border-slate-200/90 shadow-2xl flex flex-col animate-in slide-in-from-right duration-300 max-sm:inset-0 max-sm:w-full max-sm:rounded-none sm:rounded-l-3xl overflow-hidden font-sans">
+    <div
+      className={`fixed inset-y-0 right-0 z-50 w-full sm:w-[420px] bg-white border-l border-slate-200/90 shadow-2xl transition-transform duration-300 ease-in-out flex flex-col font-sans ${
+        isOpen ? "translate-x-0" : "translate-x-full"
+      }`}
+    >
       {/* Header */}
-      <div className="px-5 py-3.5 border-b border-slate-100 bg-white/90 backdrop-blur-sm flex items-center justify-between flex-shrink-0">
+      <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-white flex-shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-xs flex-shrink-0">
+          <div className="w-9 h-9 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center shadow-md">
             <IconSparkles className="w-5 h-5" />
           </div>
           <div>
@@ -400,101 +412,98 @@ export function EventraDrawer({
         </div>
       </div>
 
-      {/* Messages Container / Empty State */}
+      {/* Messages Container */}
       <div className="flex-1 p-4 sm:p-5 space-y-4 overflow-y-auto bg-slate-50/40">
-        {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center p-4 my-auto space-y-5">
-            <div className="w-14 h-14 rounded-3xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center shadow-lg ring-4 ring-indigo-50">
-              <IconSparkles className="w-7 h-7" />
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`flex flex-col ${
+              msg.sender === "user" ? "items-end" : "items-start"
+            }`}
+          >
+            {/* Sender Header Label */}
+            <div className="flex items-center gap-1.5 mb-1 px-1 text-[11px] font-semibold">
+              {msg.sender === "user" ? (
+                <span className="text-slate-500 font-bold">You</span>
+              ) : (
+                <div className="flex items-center gap-1 text-indigo-700">
+                  <div className="w-4 h-4 rounded-md bg-indigo-600 text-white flex items-center justify-center">
+                    <IconSparkles className="w-2.5 h-2.5" />
+                  </div>
+                  <span className="font-extrabold text-[#1E1B4B]">Eventra AI</span>
+                </div>
+              )}
             </div>
 
-            <div className="space-y-1.5 max-w-xs">
-              <h3 className="text-base font-extrabold text-[#1E1B4B]">Eventra AI</h3>
-              <p className="text-xs font-semibold text-indigo-600">Your Event Management Agent</p>
-              <p className="text-xs text-slate-500 leading-relaxed pt-1">
-                &ldquo;Plan events, manage tasks, identify risks, and keep your team moving.&rdquo;
-              </p>
-            </div>
-
-            <div className="w-full max-w-xs space-y-2 pt-2">
-              {[
-                "Create an event",
-                "Show event risks",
-                "Plan my tasks",
-              ].map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  onClick={() => handleSendMessage(prompt)}
-                  className="w-full py-2.5 px-4 rounded-2xl text-xs font-semibold text-[#1E1B4B] bg-white border border-slate-200/90 hover:border-indigo-400 hover:bg-indigo-50/50 transition-all cursor-pointer shadow-2xs flex items-center justify-between group"
-                >
-                  <span>{prompt}</span>
-                  <span className="text-indigo-400 group-hover:translate-x-0.5 transition-transform font-bold">→</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          messages.map((msg) => (
             <div
-              key={msg.id}
-              className={`flex flex-col ${
-                msg.sender === "user" ? "items-end" : "items-start"
+              className={`max-w-[90%] p-3.5 rounded-2xl text-xs leading-relaxed ${
+                msg.sender === "user"
+                  ? "bg-indigo-600 text-white rounded-tr-xs shadow-xs font-medium"
+                  : msg.isError
+                  ? "bg-rose-50 border border-rose-200 text-rose-800 rounded-tl-xs font-medium"
+                  : "bg-white border border-slate-200/90 text-[#1E1B4B] rounded-tl-xs shadow-2xs"
               }`}
             >
-              {/* Sender Header Label */}
-              <div className="flex items-center gap-1.5 mb-1 px-1 text-[11px] font-semibold">
-                {msg.sender === "user" ? (
-                  <span className="text-slate-500 font-bold">You</span>
-                ) : (
-                  <div className="flex items-center gap-1 text-indigo-700">
-                    <div className="w-4 h-4 rounded-md bg-indigo-600 text-white flex items-center justify-center">
-                      <IconSparkles className="w-2.5 h-2.5" />
-                    </div>
-                    <span className="font-extrabold text-[#1E1B4B]">Eventra AI</span>
-                  </div>
-                )}
-              </div>
+              {msg.sender === "user" ? (
+                <div className="whitespace-pre-wrap">{msg.text}</div>
+              ) : (
+                <div>
+                  {renderMarkdownContent(msg.text)}
+                </div>
+              )}
 
-              <div
-                className={`max-w-[90%] p-3.5 rounded-2xl text-xs leading-relaxed ${
-                  msg.sender === "user"
-                    ? "bg-indigo-600 text-white rounded-tr-xs shadow-xs font-medium"
-                    : msg.isError
-                    ? "bg-rose-50 border border-rose-200 text-rose-800 rounded-tl-xs font-medium"
-                    : "bg-white border border-slate-200/90 text-[#1E1B4B] rounded-tl-xs shadow-2xs"
-                }`}
-              >
-                {msg.sender === "user" ? (
-                  <div className="whitespace-pre-wrap">{msg.text}</div>
-                ) : (
-                  <div>
-                    {renderMarkdownContent(msg.text)}
-                  </div>
-                )}
+              {/* Retry button for errors */}
+              {msg.isError && msg.promptText && (
+                <div className="mt-2.5 pt-2 border-t border-rose-200/60 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-rose-700">Request failed</span>
+                  <button
+                    type="button"
+                    onClick={() => handleSendMessage(msg.promptText)}
+                    className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold shadow-2xs transition-colors cursor-pointer"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
 
-                {/* Agent Approval Card when a multi-action plan is generated */}
-                {msg.plan && (
-                  <div className="mt-3">
-                    <AgentApprovalCard
-                      plan={msg.plan}
-                      status={msg.executionStatus || "proposed"}
-                      executionResultText={msg.executionResultText}
-                      onApprove={() => msg.plan && handleApprovePlan(msg.id, msg.plan)}
-                      onReject={() => handleRejectPlan(msg.id)}
-                    />
-                  </div>
-                )}
-              </div>
-
-              <span className="text-[10px] text-slate-400 mt-1 px-1">
-                {msg.time}
-              </span>
+              {/* Agent Approval Card when a multi-action plan is generated */}
+              {msg.plan && (
+                <div className="mt-3">
+                  <AgentApprovalCard
+                    plan={msg.plan}
+                    status={msg.executionStatus || "proposed"}
+                    executionResultText={msg.executionResultText}
+                    onApprove={() => msg.plan && handleApprovePlan(msg.id, msg.plan)}
+                    onReject={() => handleRejectPlan(msg.id)}
+                  />
+                </div>
+              )}
             </div>
-          ))
-        )}
 
-        {/* Subtle Thinking Indicator */}
+            {/* Follow-up Suggestion Chips under AI message */}
+            {msg.sender === "ai" && msg.suggestions && msg.suggestions.length > 0 && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5 max-w-[90%] pt-0.5">
+                {msg.suggestions.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    onClick={() => handleSendMessage(suggestion)}
+                    className="px-3 py-1.5 rounded-full text-[11px] font-semibold text-indigo-700 bg-white hover:bg-indigo-50/80 border border-indigo-200/80 transition-all cursor-pointer shadow-2xs flex items-center gap-1 group"
+                  >
+                    <span>{suggestion}</span>
+                    <span className="text-indigo-400 group-hover:translate-x-0.5 transition-transform font-bold">→</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <span className="text-[10px] text-slate-400 mt-1 px-1">
+              {msg.time}
+            </span>
+          </div>
+        ))}
+
+        {/* Typing Indicator */}
         {isThinking && (
           <div className="flex items-start gap-2.5 my-2">
             <div className="w-7 h-7 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs flex-shrink-0">
@@ -502,7 +511,7 @@ export function EventraDrawer({
             </div>
             <div className="p-3 rounded-2xl bg-white border border-slate-200/90 shadow-2xs text-xs text-[#1E1B4B] flex items-center gap-2">
               <span className="font-semibold text-indigo-700">Eventra AI</span>
-              <span className="text-slate-400">Thinking...</span>
+              <span className="text-slate-400">Eventra is thinking...</span>
               <span className="flex items-center gap-1 ml-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
                 <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />

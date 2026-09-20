@@ -858,12 +858,13 @@ export async function POST(req: Request) {
 
   try {
     const body: AskyChatRequestBody & {
+      history?: { role: string; text: string }[];
       previousFunctionCalls?: Record<string, unknown>[];
       modelParts?: unknown[];
       toolResults?: { name: string; result: Record<string, unknown> }[];
     } = await req.json();
 
-    const { prompt, context, previousFunctionCalls, modelParts, toolResults } = body;
+    const { prompt, context, history, previousFunctionCalls, modelParts, toolResults } = body;
 
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return NextResponse.json(
@@ -899,20 +900,7 @@ Your mission is to help club leaders, event heads, and organizers successfully m
 Today's date is: ${now}.
 
 CURRENT CLUBOPS CONTEXT:
-${
-  event
-    ? `EVENT:
-- Title: "${event.title}"
-- ID: "${event.id}"
-- Category: "${event.category || "General"}"
-- Date & Time: ${event.date || "TBD"} at ${event.time || "TBD"}
-- Location: ${event.location || "TBD"}
-- Status: ${event.status || "Planning"}
-- RSVPs: ${event.rsvpCount || 0} / ${event.capacity || "unlimited"}
-- Lead Organizer: ${event.leadName || "Unassigned"} (${event.leadRole || "Lead"})
-- Budget: $${event.budgetSpent || 0} spent of $${event.budgetAllocated || 0} allocated`
-    : "No single event currently focused (General Club Operations view)."
-}
+EVENT: ${event ? `"${event.title}" (ID: "${event.id}", Category: ${event.category}, Date: ${event.date}, Location: ${event.location}, Status: ${event.status})` : "No active event select."}
 
 TASKS (${tasks.length} total):
 ${
@@ -960,35 +948,27 @@ ${
 USER REQUEST:
 "${trimmedPrompt}"
 
-INSTRUCTIONS FOR EVENTRA AI AGENTIC TOOL SELECTION & EVENT PLANNING:
+INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
 1. You are Eventra AI, a senior executive event planner and operational AI assistant.
-2. DUPLICATE CHECK (AVOID DUPLICATE CREATION):
-   - Review CURRENT CLUBOPS CONTEXT carefully. If an event with a matching or similar title already exists in the context, DO NOT call tool_create_event again!
-   - Review existing TASKS. Do not create exact duplicate tasks if they already exist.
-3. FULL EVENT PLANNING FLOW:
+2. CONVERSATIONAL ASSISTANT BEHAVIOR & RESPONSES:
+   - Respond like a natural assistant, NOT like a rigid static dashboard dump (avoid dumping raw "Task Status: 0/0, Team: 2 members, Risks: None" repeatedly).
+   - Answer the user's specific question directly. If there are no overdue tasks or risks, respond conversationally (e.g. "There aren't any tasks recorded yet, so there's nothing overdue. Your event currently has X team members.").
+   - Keep answers easy to scan using short paragraphs, bold key names/statuses, and bulleted lists. Avoid long giant blocks of text.
+3. CONTINUOUS CONVERSATION & FOLLOW-UPS:
+   - Use the conversation history context to answer follow-up questions seamlessly (e.g., if previous question was about overdue tasks and user asks "Why is venue setup urgent?", reference the venue setup details naturally).
+4. DUPLICATE CHECK (AVOID DUPLICATE CREATION):
+   - Review CURRENT CLUBOPS CONTEXT carefully. If an event or task with a matching title already exists, DO NOT call tool_create_event or tool_create_task again unnecessarily!
+5. FULL EVENT PLANNING FLOW:
    - When the user asks to plan or create a new event (e.g. "Mare Tech Fest karvo chhe...", "Plan an event...", "Create Tech Fest"):
    - Propose tool_create_event (if not existing).
-   - Propose multiple tool_create_task calls for initial execution tasks (e.g. Poster Design, Marketing, Logistics setup, Registration launch, Technical setup).
-   - Set deadlines BEFORE the event date (e.g., if event date is 15 October 2026, set task deadlines like 1 Oct, 5 Oct, 10 Oct). NEVER create deadlines after the event date.
-   - Propose tool_assign_task calls assigning tasks to members in TEAM MEMBERS based on role fit and current workload. Do not assign outside the event team.
-   - Propose tool_create_dependency calls for logical task prerequisites (e.g. Registration launch depends on Event setup, Technical setup depends on Logistics).
-4. TURN 2 RESPONSE (AFTER TOOL EXECUTION RESULTS):
-   - When tool execution results are provided, produce a clean executive final response based strictly on actual database execution results:
-     ### Event Plan Created
-
-     **[Event Title]** is ready.
-
-     - Event workspace created
-     - X tasks created
-     - X members assigned
-     - X dependencies created
-
-     **Next attention**
-     - Any risks detected
-     - Any overloaded members
-     - Any unassigned tasks
-5. GENERAL QUESTIONS & QUERIES:
-   - If no tool calls are needed, respond directly with short, executive Markdown formatted text with headings and bullet points. Never use fake progress or long paragraphs.`;
+   - Propose multiple tool_create_task calls for initial execution tasks.
+   - Set deadlines BEFORE the event date. NEVER create deadlines after the event date.
+   - Propose tool_assign_task calls assigning tasks to members in TEAM MEMBERS based on role fit.
+   - Propose tool_create_dependency calls for logical task prerequisites.
+6. TURN 2 RESPONSE (AFTER TOOL EXECUTION RESULTS):
+   - When tool execution results are provided, produce a clean executive final response based strictly on actual database execution results.
+7. GENERAL QUESTIONS & QUERIES:
+   - If no tool calls are needed, respond directly with conversational, clear Markdown formatted text with bullet points.`;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 12000);
@@ -1034,6 +1014,26 @@ INSTRUCTIONS FOR EVENTRA AI AGENTIC TOOL SELECTION & EVENT PLANNING:
       throw new Error(`Gemini API returned status ${lastRes?.status || 500}: ${lastErrText}`);
     };
 
+    // Build multi-turn contents history for Gemini
+    const contentsHistory: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+
+    if (history && Array.isArray(history)) {
+      for (const turn of history.slice(-6)) {
+        if (turn.text && typeof turn.text === "string" && turn.text.trim()) {
+          contentsHistory.push({
+            role: turn.role === "user" ? "user" : "model",
+            parts: [{ text: turn.text.trim() }],
+          });
+        }
+      }
+    }
+
+    // Add current turn with full context
+    contentsHistory.push({
+      role: "user",
+      parts: [{ text: contextPrompt }],
+    });
+
     // TURN 2: Responding after Tool Execution Result
     if (toolResults && toolResults.length > 0 && (previousFunctionCalls || modelParts)) {
       const contents = [
@@ -1077,7 +1077,7 @@ INSTRUCTIONS FOR EVENTRA AI AGENTIC TOOL SELECTION & EVENT PLANNING:
 
     // TURN 1: Initial Reasoning & Function Call Decision
     const geminiData = await callGemini(
-      [{ role: "user", parts: [{ text: contextPrompt }] }],
+      contentsHistory,
       GEMINI_EVENTRA_TOOLS
     );
     clearTimeout(timeoutId);
