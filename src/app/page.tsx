@@ -17,6 +17,7 @@ import { ClubSettingsView } from "@/components/club-settings-view";
 import { ClubsListView } from "@/components/clubs-list-view";
 import { EventWorkspace } from "@/components/event-workspace";
 import { CopilotSidebar } from "@/components/copilot-sidebar";
+import { EventraDrawer } from "@/components/eventra-drawer";
 import { InboxModal } from "@/components/inbox-modal";
 import { CreateEventModal } from "@/components/create-event-modal";
 import { CreateClubModal } from "@/components/create-club-modal";
@@ -52,6 +53,8 @@ export default function Home() {
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false);
   const [isCreateClubOpen, setIsCreateClubOpen] = useState(false);
   const [isJoinClubOpen, setIsJoinClubOpen] = useState(false);
+  const [isEventraDrawerOpen, setIsEventraDrawerOpen] = useState(false);
+  const [eventraInitialPrompt, setEventraInitialPrompt] = useState<string | undefined>(undefined);
   const [copilotInput, setCopilotInput] = useState("");
   const [loadingClubs, setLoadingClubs] = useState(true);
   const [clubsError, setClubsError] = useState<string | null>(null);
@@ -353,9 +356,6 @@ export default function Home() {
     );
   };
 
-  const handleCopilotPrompt = (prompt: string) => {
-    setCopilotInput(prompt);
-  };
 
   const handleSignOut = async () => {
     setClubs([]);
@@ -744,46 +744,42 @@ export default function Home() {
             memberCount={displayMemberCount}
             input={copilotInput}
             onInputChange={setCopilotInput}
-            onSendPrompt={handleCopilotPrompt}
-            context={{
-              event: activeEvent
-                ? {
-                    id: activeEvent.id,
-                    title: activeEvent.title,
-                    category: activeEvent.category,
-                    date: activeEvent.date,
-                    time: activeEvent.time,
-                    location: activeEvent.location,
-                    status: activeEvent.status,
-                    rsvpCount: activeEvent.rsvpCount,
-                    capacity: activeEvent.capacity,
-                    leadName: activeEvent.leadName,
-                    leadRole: activeEvent.leadRole,
-                    budgetAllocated: activeEvent.budgetAllocated,
-                    budgetSpent: activeEvent.budgetSpent,
-                  }
-                : null,
-              tasks: tasks.map((t) => ({
-                id: t.id,
-                title: t.title,
-                priority: t.priority,
-                dueText: t.dueText,
-                deadline: t.deadline,
-                assigneeName: t.assigneeName,
-                assigneeRole: t.assigneeRole,
-                status: t.status,
-                completed: t.completed,
-              })),
-              teamMembers: activeClubMembers.map((m) => ({
-                id: m.id,
-                name: m.name,
-                role: m.role,
-                email: m.email,
-              })),
+            onOpenEventraAI={(prompt) => {
+              if (prompt) setEventraInitialPrompt(prompt);
+              setIsEventraDrawerOpen(true);
             }}
           />
         </div>
       </div>
+
+      {/* Eventra AI Chatbot Drawer (2nd Photo Chatbot used everywhere) */}
+      <EventraDrawer
+        isOpen={isEventraDrawerOpen}
+        onClose={() => {
+          setIsEventraDrawerOpen(false);
+          setEventraInitialPrompt(undefined);
+        }}
+        event={activeEvent ?? undefined}
+        currentUserId={auth.user?.id}
+        teamMembers={activeClubMembers.map((m) => ({
+          id: m.id,
+          clubMemberId: m.id,
+          eventId: activeEvent?.id || "club-general",
+          name: m.name,
+          role: m.role || "Member",
+          email: m.email || "",
+          joinedAt: new Date().toISOString(),
+        }))}
+        eventTasks={tasks}
+        onTasksUpdated={() => {
+          if (activeClub?.id) {
+            fetchClubEvents(activeClub.id).then(({ events: fetchedEvents }) => {
+              if (fetchedEvents) setEvents(fetchedEvents);
+            });
+          }
+        }}
+        initialPrompt={eventraInitialPrompt}
+      />
 
       {/* Modals */}
       <CreateEventModal

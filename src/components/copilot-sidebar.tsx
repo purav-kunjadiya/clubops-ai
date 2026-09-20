@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import {
   IconSparkles,
   IconArrowRight,
@@ -17,7 +16,7 @@ interface CopilotSidebarProps {
   memberCount: number;
   input: string;
   onInputChange: (val: string) => void;
-  onSendPrompt?: (prompt: string) => void;
+  onOpenEventraAI: (prompt?: string) => void;
   context?: {
     event?: Record<string, unknown> | null;
     tasks?: Array<Record<string, unknown>>;
@@ -33,79 +32,45 @@ export function CopilotSidebar({
   memberCount,
   input,
   onInputChange,
-  onSendPrompt,
-  context,
+  onOpenEventraAI,
 }: CopilotSidebarProps) {
-  const [responseSnippet, setResponseSnippet] = useState<string | null>(null);
-  const [isError, setIsError] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-
   const suggestionChips = [
     "What tasks are currently overdue?",
     "Who has the highest workload?",
     "What risks should I be aware of?",
-    "Summarize club activity",
+    "What should we focus on today?",
   ];
-
-  const handleSend = async (textToSend?: string) => {
-    const text = textToSend || input;
-    if (!text.trim() || isLoading) return;
-
-    if (onSendPrompt) {
-      onSendPrompt(text);
-    }
-
-    onInputChange("");
-    setIsLoading(true);
-    setIsError(false);
-    setResponseSnippet("Eventra AI is thinking...");
-
-    try {
-      const res = await fetch("/api/asky/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: text.trim(),
-          context: context || {},
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setIsError(true);
-        setResponseSnippet(data.error || "Sorry, I couldn't process your question right now.");
-      } else {
-        setIsError(false);
-        setResponseSnippet(data.answer || "No response received.");
-      }
-    } catch {
-      setIsError(true);
-      setResponseSnippet("Network error: Unable to reach Eventra AI service. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   return (
     <aside className="w-full lg:w-80 space-y-6 flex-shrink-0">
-      {/* Card 1: Eventra AI */}
+      {/* Card 1: Eventra AI Assistant Launcher */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm space-y-4">
         {/* Header */}
-        <div className="flex items-start gap-2.5">
-          <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600">
-            <IconSparkles className="w-4 h-4" />
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center shadow-md">
+              <IconSparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-extrabold text-[#1E1B4B]">Eventra AI</h2>
+              <p className="text-[11px] font-medium text-slate-500">Your Event Management Agent</p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-sm font-bold text-[#1E1B4B]">Eventra AI</h2>
-            <p className="text-xs text-slate-500">Your ClubOps AI assistant</p>
+
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/60 text-[10px] font-bold text-emerald-700">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Online</span>
           </div>
         </div>
 
-        {/* Input Box */}
+        {/* Input Box that launches Chatbot Drawer */}
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            handleSend();
+            if (input.trim()) {
+              onOpenEventraAI(input.trim());
+              onInputChange("");
+            }
           }}
           className="relative"
         >
@@ -125,38 +90,35 @@ export function CopilotSidebar({
                   ? "bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer shadow-sm"
                   : "bg-indigo-600/60 text-white/80 cursor-not-allowed"
               }`}
-              aria-label="Send prompt"
+              aria-label="Send prompt to Eventra AI"
             >
               <IconArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
         </form>
 
-        {responseSnippet && (
-          <div
-            className={`p-2.5 rounded-xl text-[11px] leading-relaxed animate-in fade-in transition-all ${
-              isError
-                ? "bg-rose-50 border border-rose-200 text-rose-800"
-                : isLoading
-                ? "bg-indigo-50/70 border border-indigo-100 text-indigo-700 flex items-center gap-2"
-                : "bg-indigo-50 border border-indigo-100 text-indigo-900 whitespace-pre-wrap max-h-60 overflow-y-auto"
-            }`}
-          >
-            {isLoading && <IconSparkles className="w-3.5 h-3.5 text-indigo-600 animate-spin flex-shrink-0" />}
-            <span>{responseSnippet}</span>
-          </div>
-        )}
+        {/* Primary CTA Button to open full Chatbot */}
+        <button
+          type="button"
+          onClick={() => onOpenEventraAI()}
+          className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 transition-all shadow-sm cursor-pointer flex items-center justify-center gap-2"
+        >
+          <IconSparkles className="w-4 h-4" />
+          <span>Open Eventra AI Chat</span>
+        </button>
 
-        {/* Suggestion Chips */}
-        <div className="space-y-2 pt-1">
+        {/* Clickable Starter Chips */}
+        <div className="space-y-2 pt-1 border-t border-slate-100">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Suggested Questions</p>
           {suggestionChips.map((chip) => (
             <button
               key={chip}
               type="button"
-              onClick={() => handleSend(chip)}
-              className="w-full text-center py-2 px-3 rounded-xl text-xs font-medium text-slate-700 bg-slate-50/80 hover:bg-indigo-50 hover:text-indigo-700 border border-slate-200/80 transition-all cursor-pointer"
+              onClick={() => onOpenEventraAI(chip)}
+              className="w-full text-left py-2 px-3 rounded-xl text-xs font-medium text-slate-700 bg-slate-50/80 hover:bg-indigo-50 hover:text-indigo-700 border border-slate-200/80 transition-all cursor-pointer flex items-center justify-between group"
             >
-              {chip}
+              <span>{chip}</span>
+              <span className="text-indigo-400 group-hover:translate-x-0.5 transition-transform font-bold">→</span>
             </button>
           ))}
         </div>

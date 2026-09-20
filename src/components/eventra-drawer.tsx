@@ -33,7 +33,7 @@ interface MessageItem {
 interface EventraDrawerProps {
   isOpen: boolean;
   onClose: () => void;
-  event: ClubEvent;
+  event?: ClubEvent | null;
   club?: unknown;
   currentUserId?: string;
   teamMembers: EventTeamMember[];
@@ -104,7 +104,7 @@ export function EventraDrawer({
   );
 
   const detectedRisks = React.useMemo(
-    () => detectEventRisks(event.id, eventTasks, teamMembers, event),
+    () => detectEventRisks(event?.id || "general", eventTasks, teamMembers, event || undefined),
     [eventTasks, teamMembers, event]
   );
 
@@ -195,21 +195,23 @@ export function EventraDrawer({
           prompt: promptText,
           history: conversationHistory,
           context: {
-            event: {
-              id: event.id,
-              title: event.title,
-              category: event.category,
-              date: event.date,
-              time: event.time,
-              location: event.location,
-              status: event.status,
-              rsvpCount: event.rsvpCount,
-              capacity: event.capacity,
-              leadName: event.leadName,
-              leadRole: event.leadRole,
-              budgetAllocated: event.budgetAllocated,
-              budgetSpent: event.budgetSpent,
-            },
+            event: event
+              ? {
+                  id: event.id,
+                  title: event.title,
+                  category: event.category,
+                  date: event.date,
+                  time: event.time,
+                  location: event.location,
+                  status: event.status,
+                  rsvpCount: event.rsvpCount,
+                  capacity: event.capacity,
+                  leadName: event.leadName,
+                  leadRole: event.leadRole,
+                  budgetAllocated: event.budgetAllocated,
+                  budgetSpent: event.budgetSpent,
+                }
+              : null,
             tasks: eventTasks.map((t) => ({
               id: t.id,
               title: t.title,
