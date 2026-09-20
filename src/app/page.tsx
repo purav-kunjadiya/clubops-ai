@@ -639,6 +639,9 @@ export default function Home() {
           onOpenInbox={() => setIsInboxOpen(true)}
           unreadCount={unreadInboxCount}
           userInitial={userInitial}
+          userEmail={userEmail}
+          userName={userName}
+          activeClubName={activeClub?.name}
           onSignOut={handleSignOut}
         />
 
