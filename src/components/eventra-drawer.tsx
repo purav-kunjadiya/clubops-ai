@@ -442,10 +442,24 @@ export function EventraDrawer({
                 msg.sender === "user" ? "items-end" : "items-start"
               }`}
             >
+              {/* Sender Header Label */}
+              <div className="flex items-center gap-1.5 mb-1 px-1 text-[11px] font-semibold">
+                {msg.sender === "user" ? (
+                  <span className="text-slate-500 font-bold">You</span>
+                ) : (
+                  <div className="flex items-center gap-1 text-indigo-700">
+                    <div className="w-4 h-4 rounded-md bg-indigo-600 text-white flex items-center justify-center">
+                      <IconSparkles className="w-2.5 h-2.5" />
+                    </div>
+                    <span className="font-extrabold text-[#1E1B4B]">Eventra AI</span>
+                  </div>
+                )}
+              </div>
+
               <div
                 className={`max-w-[90%] p-3.5 rounded-2xl text-xs leading-relaxed ${
                   msg.sender === "user"
-                    ? "bg-indigo-50 border border-indigo-100 text-[#1E1B4B] rounded-tr-xs shadow-2xs font-medium"
+                    ? "bg-indigo-600 text-white rounded-tr-xs shadow-xs font-medium"
                     : msg.isError
                     ? "bg-rose-50 border border-rose-200 text-rose-800 rounded-tl-xs font-medium"
                     : "bg-white border border-slate-200/90 text-[#1E1B4B] rounded-tl-xs shadow-2xs"
