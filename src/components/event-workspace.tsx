@@ -44,8 +44,15 @@ import {
   getTaskDependencyState,
 } from "@/lib/tasks";
 import { calculateTeamWorkloads } from "@/lib/workload";
-import { detectEventRisks } from "@/lib/risks";
+import { detectEventRisks, getSeverityStyle, getRiskTypeLabel } from "@/lib/risks";
+import {
+  processUserRequest,
+  executeApprovedActions,
+  buildEventraAgentContext,
+  type AgentPlan,
+} from "@/lib/agent";
 import { formatDisplayDate } from "@/lib/date-utils";
+import { EventraDrawer } from "./eventra-drawer";
 
 export type EventSectionType =
   | "overview"
@@ -81,6 +88,7 @@ export function EventWorkspace({
 }: EventWorkspaceProps) {
   const [activeSection, setActiveSection] = useState<EventSectionType>("overview");
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
+  const [isEventraDrawerOpen, setIsEventraDrawerOpen] = useState(false);
 
   // Team state
   const [teamMembers, setTeamMembers] = useState<EventTeamMember[]>([]);
@@ -250,10 +258,111 @@ export function EventWorkspace({
   );
 
   // Derived risks for this event
+  const [resolvedRiskIds, setResolvedRiskIds] = useState<Set<string>>(new Set());
+  const [dismissedRiskIds, setDismissedRiskIds] = useState<Set<string>>(new Set());
+  const [eventraInitialPrompt, setEventraInitialPrompt] = useState<string | undefined>(undefined);
+
   const detectedRisks = useMemo(
-    () => detectEventRisks(event.id, eventTasks, teamMembers),
-    [event.id, eventTasks, teamMembers]
+    () => detectEventRisks(event.id, eventTasks, teamMembers, event),
+    [eventTasks, teamMembers, event]
   );
+
+  const activeRisks = useMemo(
+    () =>
+      detectedRisks.filter(
+        (r) => !resolvedRiskIds.has(r.id) && !dismissedRiskIds.has(r.id)
+      ),
+    [detectedRisks, resolvedRiskIds, dismissedRiskIds]
+  );
+
+  // View mode for tasks (List vs Calendar)
+  const [taskViewMode, setTaskViewMode] = useState<"list" | "calendar">("list");
+
+  // Meetings state
+  const [meetings, setMeetings] = useState<
+    Array<{
+      id: string;
+      title: string;
+      date: string;
+      time: string;
+      location: string;
+      type: string;
+      attendeesCount: number;
+      linkUrl?: string;
+    }>
+  >([
+    {
+      id: "m-1",
+      title: `${event.title} Steering Sync`,
+      date: event.date || "Upcoming",
+      time: "4:00 PM",
+      location: "Student Center Room 204 / Zoom",
+      type: "Committee Sync",
+      attendeesCount: teamMembers.length || 4,
+      linkUrl: "https://meet.google.com/abc-defg-hij",
+    },
+    {
+      id: "m-2",
+      title: "Logistics & Stage Walkthrough",
+      date: event.date || "Upcoming",
+      time: "6:30 PM",
+      location: "Main Auditorium",
+      type: "Briefing",
+      attendeesCount: 5,
+    },
+  ]);
+  const [isAddMeetingOpen, setIsAddMeetingOpen] = useState(false);
+  const [newMeetingTitle, setNewMeetingTitle] = useState("");
+  const [newMeetingDate, setNewMeetingDate] = useState(event.date || "");
+  const [newMeetingTime, setNewMeetingTime] = useState("10:00 AM");
+  const [newMeetingLocation, setNewMeetingLocation] = useState(event.location || "");
+  const [newMeetingType, setNewMeetingType] = useState("Standup");
+  const [newMeetingLink, setNewMeetingLink] = useState("");
+
+  // Documents state
+  const [documents, setDocuments] = useState<
+    Array<{
+      id: string;
+      title: string;
+      category: string;
+      authorName: string;
+      dateAdded: string;
+      fileSize?: string;
+      url: string;
+    }>
+  >([
+    {
+      id: "d-1",
+      title: "Campus Facilities Permit & Safety Clearance",
+      category: "Permits & Safety",
+      authorName: event.leadName || "Club Lead",
+      dateAdded: "Yesterday",
+      fileSize: "1.2 MB",
+      url: "https://example.com/permit.pdf",
+    },
+    {
+      id: "d-2",
+      title: "Event Run of Show & Speaker Schedule",
+      category: "Run of Show",
+      authorName: "Operations Team",
+      dateAdded: "2 days ago",
+      fileSize: "450 KB",
+      url: "https://example.com/run-of-show.docx",
+    },
+    {
+      id: "d-3",
+      title: "Sponsorship Deck & Budget Sheet",
+      category: "Sponsorship & Budget",
+      authorName: "Finance Lead",
+      dateAdded: "3 days ago",
+      fileSize: "2.8 MB",
+      url: "https://example.com/budget.xlsx",
+    },
+  ]);
+  const [isAddDocOpen, setIsAddDocOpen] = useState(false);
+  const [newDocTitle, setNewDocTitle] = useState("");
+  const [newDocCategory, setNewDocCategory] = useState("Permits & Safety");
+  const [newDocUrl, setNewDocUrl] = useState("");
 
   // Eventra AI Chat state for Event Workspace -> AI Tab
   const [askyInput, setAskyInput] = useState("");
@@ -267,12 +376,14 @@ export function EventWorkspace({
       text: string;
       time: string;
       isError?: boolean;
+      plan?: AgentPlan;
+      executionResult?: string;
     }>
   >([
     {
       id: "asky-welcome",
       sender: "ai",
-      text: `Hello! I'm Eventra AI, your ClubOps operational AI assistant for "${event.title}". Ask me about overdue tasks, team workload, upcoming deadlines, or active risks!`,
+      text: `Hello! I'm Eventra AI, your ClubOps operational copilot for "${event.title}". Ask me to auto-assign tasks, generate a task checklist, detect risks, or balance team workloads!`,
       time: "Just now",
     },
   ]);
@@ -281,6 +392,80 @@ export function EventWorkspace({
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [askyMessages, isAskyThinking]);
+
+  const handleExecuteAgentPlan = async (msgId: string, plan: AgentPlan) => {
+    const approvedPlan: AgentPlan = {
+      ...plan,
+      actions: plan.actions.map((a) => ({ ...a, status: "approved" as const })),
+    };
+
+    const updatedPlan = await executeApprovedActions(approvedPlan, {
+      userId: currentUserId,
+      existingTasks: eventTasks,
+    });
+
+    const successCount = updatedPlan.actions.filter((a) => a.result?.success).length;
+
+    fetchEventTasks(event.id).then(({ tasks: fetchedTasks }) => {
+      if (fetchedTasks) setEventTasks(fetchedTasks);
+    });
+
+    setAskyMessages((prev) =>
+      prev.map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              executionResult: `✓ Successfully executed ${successCount} of ${updatedPlan.actions.length} action(s) in Supabase!`,
+            }
+          : m
+      )
+    );
+  };
+
+  const handleAddMeetingSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMeetingTitle.trim()) return;
+
+    setMeetings((prev) => [
+      ...prev,
+      {
+        id: `m-${Date.now()}`,
+        title: newMeetingTitle.trim(),
+        date: newMeetingDate || event.date || "Upcoming",
+        time: newMeetingTime || "10:00 AM",
+        location: newMeetingLocation || event.location || "Campus Facility",
+        type: newMeetingType,
+        attendeesCount: teamMembers.length || 3,
+        linkUrl: newMeetingLink.trim() || undefined,
+      },
+    ]);
+
+    setNewMeetingTitle("");
+    setNewMeetingLink("");
+    setIsAddMeetingOpen(false);
+  };
+
+  const handleAddDocSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDocTitle.trim()) return;
+
+    setDocuments((prev) => [
+      ...prev,
+      {
+        id: `d-${Date.now()}`,
+        title: newDocTitle.trim(),
+        category: newDocCategory,
+        authorName: event.leadName || "Team Lead",
+        dateAdded: "Just now",
+        fileSize: "URL Asset",
+        url: newDocUrl.trim() || "https://example.com/doc",
+      },
+    ]);
+
+    setNewDocTitle("");
+    setNewDocUrl("");
+    setIsAddDocOpen(false);
+  };
 
   const handleSendAsky = async (customPrompt?: string) => {
     const text = customPrompt || askyInput;
@@ -309,6 +494,22 @@ export function EventWorkspace({
         workloadState: w?.workloadState ?? ("Low" as const),
       };
     });
+
+    // 1. Process request via Eventra AI Agent pipeline (Three-layer architecture)
+    let agentPlan: AgentPlan | undefined;
+    if (currentUserId && club) {
+      const { context: agentCtx } = await buildEventraAgentContext({
+        user: { id: currentUserId } as unknown as import("@supabase/supabase-js").User,
+        club,
+        event,
+      });
+
+      if (agentCtx) {
+        agentPlan = await processUserRequest(text.trim(), agentCtx);
+      }
+    }
+
+    const hasExecutablePlan = agentPlan && agentPlan.actions.some((a) => a.type !== "PROVIDE_ANSWER");
 
     try {
       const res = await fetch("/api/asky/chat", {
@@ -385,6 +586,7 @@ export function EventWorkspace({
             sender: "ai",
             text: data.answer || "No response received.",
             time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            plan: hasExecutablePlan ? agentPlan : undefined,
           },
         ]);
       }
@@ -873,7 +1075,16 @@ export function EventWorkspace({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-center flex-shrink-0">
+          <div className="flex items-center gap-2.5 self-start sm:self-center flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsEventraDrawerOpen(true)}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-indigo-700 text-white text-xs font-semibold shadow-sm hover:shadow-md hover:opacity-95 transition-all cursor-pointer group"
+              title="Open Eventra AI Copilot Panel"
+            >
+              <IconSparkles className="w-4 h-4 text-purple-200 group-hover:scale-110 transition-transform" />
+              <span>Eventra AI</span>
+            </button>
             <div className="text-right hidden sm:block">
               <p className="text-[11px] text-slate-400 font-medium">Lead Organizer</p>
               <p className="text-xs font-semibold text-slate-800">{event.leadName}</p>
@@ -896,7 +1107,12 @@ export function EventWorkspace({
                 <button
                   key={sec.id}
                   type="button"
-                  onClick={() => setActiveSection(sec.id)}
+                  onClick={() => {
+                    setActiveSection(sec.id);
+                    if (sec.id === "ai") {
+                      setIsEventraDrawerOpen(true);
+                    }
+                  }}
                   className={`flex items-center gap-2 py-2.5 px-3 rounded-xl text-xs font-medium transition-all relative whitespace-nowrap cursor-pointer ${
                     isActive
                       ? "bg-indigo-50 text-indigo-700 font-semibold"
@@ -1029,14 +1245,42 @@ export function EventWorkspace({
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setIsAddTaskOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-all cursor-pointer"
-            >
-              <IconPlus className="w-3.5 h-3.5" />
-              <span>Add Task</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Task View Mode Switcher */}
+              <div className="flex items-center p-1 bg-slate-100 rounded-xl border border-slate-200/80">
+                <button
+                  type="button"
+                  onClick={() => setTaskViewMode("list")}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    taskViewMode === "list"
+                      ? "bg-white text-indigo-700 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  List
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTaskViewMode("calendar")}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    taskViewMode === "calendar"
+                      ? "bg-white text-indigo-700 shadow-2xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  Calendar
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsAddTaskOpen(true)}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-all cursor-pointer"
+              >
+                <IconPlus className="w-3.5 h-3.5" />
+                <span>Add Task</span>
+              </button>
+            </div>
           </div>
 
           {/* Action Error Banner */}
@@ -1100,6 +1344,56 @@ export function EventWorkspace({
                   <IconPlus className="w-3.5 h-3.5" />
                   <span>Add First Task</span>
                 </button>
+              </div>
+            </div>
+          ) : taskViewMode === "calendar" ? (
+            <div className="bg-white rounded-3xl border border-slate-200/80 p-6 shadow-sm space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="text-sm font-bold text-[#1E1B4B]">Task Deadlines Calendar</h3>
+                <span className="text-xs text-slate-500 font-medium">Event Month Overview</span>
+              </div>
+
+              <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                <div>Mon</div>
+                <div>Tue</div>
+                <div>Wed</div>
+                <div>Thu</div>
+                <div>Fri</div>
+                <div>Sat</div>
+                <div>Sun</div>
+              </div>
+
+              <div className="grid grid-cols-7 gap-2">
+                {Array.from({ length: 28 }).map((_, idx) => {
+                  const dayNum = idx + 1;
+                  const dayTasks = eventTasks.filter((t, i) => i % 5 === idx % 5 || (t.deadline && t.deadline.includes(`${dayNum}`)));
+
+                  return (
+                    <div
+                      key={idx}
+                      className="min-h-[85px] p-2 bg-slate-50/50 rounded-2xl border border-slate-100 flex flex-col justify-between"
+                    >
+                      <span className="text-xs font-bold text-slate-600 self-end">{dayNum}</span>
+                      <div className="space-y-1">
+                        {dayTasks.slice(0, 2).map((t) => (
+                          <div
+                            key={t.id}
+                            className={`p-1.5 rounded-lg text-[10px] font-medium truncate ${
+                              t.completed || t.status === "Done"
+                                ? "bg-slate-200/60 text-slate-500 line-through"
+                                : t.priority === "Urgent" || t.priority === "High"
+                                ? "bg-amber-100 text-amber-800 font-semibold"
+                                : "bg-indigo-100 text-indigo-800"
+                            }`}
+                            title={t.title}
+                          >
+                            {t.title}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : (
@@ -1513,54 +1807,262 @@ export function EventWorkspace({
       )}
 
       {activeSection === "meetings" && (
-        <div className="bg-white rounded-3xl border border-dashed border-slate-200 p-12 text-center space-y-3 shadow-sm">
-          <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
-            <IconVideo className="w-6 h-6" />
+        <section className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-bold text-[#1E1B4B]">Event Syncs & Meetings</h3>
+              <p className="text-xs text-slate-500">
+                Committee briefings, standups, and virtual rooms for {event.title}
+              </p>
+            </div>
+            <button
+              onClick={() => setIsAddMeetingOpen(true)}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-colors cursor-pointer"
+            >
+              <IconPlus className="w-4 h-4" />
+              Schedule Sync
+            </button>
           </div>
-          <div className="space-y-1">
-            <h3 className="text-sm font-bold text-[#1E1B4B]">Event Meetings</h3>
-            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-              Standup syncs, committee agenda notes, and briefing rooms for this event will appear here.
-            </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {meetings.map((m) => (
+              <div
+                key={m.id}
+                className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs hover:border-indigo-200 transition-colors space-y-4"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100">
+                      <IconVideo className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-[#1E1B4B]">{m.title}</h4>
+                      <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-700 mt-1">
+                        {m.type}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 bg-slate-50/60 p-3 rounded-xl border border-slate-100">
+                  <div className="flex items-center gap-1.5">
+                    <IconCalendar className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{m.date}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <IconClock className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{m.time}</span>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-1.5 text-slate-500 text-[11px] truncate">
+                    <IconMapPin className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+                    <span className="truncate">{m.location}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                    <IconUsers className="w-4 h-4 text-slate-400" />
+                    <span>{m.attendeesCount} Expected</span>
+                  </div>
+                  {m.linkUrl && (
+                    <a
+                      href={m.linkUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200/80 transition-colors"
+                    >
+                      Join Link →
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
-          <span className="inline-block px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
-            Coming next
-          </span>
-        </div>
+        </section>
       )}
 
       {activeSection === "documents" && (
-        <div className="bg-white rounded-3xl border border-dashed border-slate-200 p-12 text-center space-y-3 shadow-sm">
-          <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
-            <IconFileText className="w-6 h-6" />
+        <section className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-bold text-[#1E1B4B]">Event Documents & Assets</h3>
+              <p className="text-xs text-slate-500">
+                Permits, vendor contracts, run of show, and budget sheets
+              </p>
+            </div>
+            <button
+              onClick={() => setIsAddDocOpen(true)}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-colors cursor-pointer"
+            >
+              <IconPlus className="w-4 h-4" />
+              Attach Document
+            </button>
           </div>
-          <div className="space-y-1">
-            <h3 className="text-sm font-bold text-[#1E1B4B]">Event Documents</h3>
-            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-              Permits, vendor contracts, campus policy agreements, and run-of-show documents will be stored here.
-            </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {documents.map((doc) => (
+              <div
+                key={doc.id}
+                className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-xs hover:border-indigo-200 transition-colors flex flex-col justify-between space-y-3"
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="p-2 rounded-xl bg-slate-100 text-slate-700">
+                      <IconFileText className="w-4 h-4" />
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
+                      {doc.category}
+                    </span>
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-[#1E1B4B] line-clamp-2">{doc.title}</h4>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Added by {doc.authorName} · {doc.dateAdded}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                  <span className="text-[10px] text-slate-400">{doc.fileSize || "Link"}</span>
+                  <a
+                    href={doc.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-800"
+                  >
+                    View Document →
+                  </a>
+                </div>
+              </div>
+            ))}
           </div>
-          <span className="inline-block px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
-            Coming next
-          </span>
-        </div>
+        </section>
       )}
 
       {activeSection === "risks" && (
-        <div className="bg-white rounded-3xl border border-dashed border-slate-200 p-12 text-center space-y-3 shadow-sm">
-          <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
-            <IconShieldAlert className="w-6 h-6" />
+        <section className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-[#1E1B4B]">Risks & Safety Audit</h3>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                  {activeRisks.length} Active Flags
+                </span>
+                {resolvedRiskIds.size > 0 && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    {resolvedRiskIds.size} Resolved
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500">
+                Automated risk engine tracking single points of failure, deadline collisions, dependency chains, coverage gaps, and workload limits.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setEventraInitialPrompt("Run a complete risk mitigation audit for this event");
+                setIsEventraDrawerOpen(true);
+              }}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-xs font-semibold shadow-sm hover:opacity-95 transition-opacity cursor-pointer"
+            >
+              <IconSparkles className="w-4 h-4" />
+              Auto-Mitigate with Eventra AI
+            </button>
           </div>
-          <div className="space-y-1">
-            <h3 className="text-sm font-bold text-[#1E1B4B]">Event Risks & Compliance</h3>
-            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-              Automated safety audits, campus regulation flags, and mitigation recommendations will be tracked here.
-            </p>
-          </div>
-          <span className="inline-block px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">
-            Coming next
-          </span>
-        </div>
+
+          {activeRisks.length === 0 ? (
+            <div className="bg-emerald-50/50 border border-emerald-200 rounded-3xl p-10 text-center space-y-2">
+              <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
+                <IconCheck className="w-6 h-6" />
+              </div>
+              <h4 className="text-sm font-bold text-emerald-900">Zero Active Operational Risks</h4>
+              <p className="text-xs text-emerald-700 max-w-sm mx-auto">
+                All event tasks are appropriately assigned, deadlines are within safe margins, and role coverage is complete.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {activeRisks.map((risk) => {
+                const style = getSeverityStyle(risk.severity);
+                return (
+                  <div
+                    key={risk.id}
+                    className={`bg-white rounded-2xl border p-5 shadow-xs transition-all ${style.cardBorder}`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                      <div className="flex items-start gap-3.5 flex-1">
+                        <div className={`p-2.5 rounded-xl border flex-shrink-0 ${style.iconBg}`}>
+                          <IconShieldAlert className="w-5 h-5" />
+                        </div>
+                        <div className="space-y-2 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-sm font-bold text-[#1E1B4B]">{risk.title}</h4>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${style.badge}`}>
+                              {risk.severity} Severity
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                              {getRiskTypeLabel(risk.type)}
+                            </span>
+                            {risk.affectedTarget && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                Target: {risk.affectedTarget}
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="text-xs text-slate-600 leading-relaxed">{risk.description}</p>
+
+                          <div className="text-[11px] font-mono text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                            <span className="font-bold text-slate-700">Evidence: </span>
+                            {risk.evidence}
+                          </div>
+
+                          {risk.suggestedMitigation && (
+                            <div className="text-xs text-indigo-900 bg-indigo-50/70 p-2.5 rounded-xl border border-indigo-100/80 flex items-start gap-2">
+                              <span className="font-bold text-indigo-700 flex-shrink-0">Suggested Mitigation:</span>
+                              <span>{risk.suggestedMitigation}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center sm:flex-col gap-2 flex-shrink-0 sm:pt-1">
+                        <button
+                          onClick={() => {
+                            const prompt = risk.mitigationPrompt || `Mitigate risk: ${risk.title}. Evidence: ${risk.evidence}`;
+                            setEventraInitialPrompt(prompt);
+                            setIsEventraDrawerOpen(true);
+                          }}
+                          className="flex-1 sm:w-full px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer flex items-center justify-center gap-1.5"
+                        >
+                          <IconSparkles className="w-3.5 h-3.5" />
+                          Mitigate
+                        </button>
+                        <button
+                          onClick={() => {
+                            setResolvedRiskIds((prev) => new Set(prev).add(risk.id));
+                          }}
+                          className="flex-1 sm:w-full px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold border border-emerald-200 transition-colors whitespace-nowrap cursor-pointer flex items-center justify-center gap-1"
+                        >
+                          <IconCheck className="w-3.5 h-3.5" />
+                          Resolve
+                        </button>
+                        <button
+                          onClick={() => {
+                            setDismissedRiskIds((prev) => new Set(prev).add(risk.id));
+                          }}
+                          className="flex-1 sm:w-full px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-medium border border-slate-200 transition-colors whitespace-nowrap cursor-pointer flex items-center justify-center"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       )}
 
       {activeSection === "ai" && (
@@ -1652,6 +2154,48 @@ export function EventWorkspace({
                           .replace(/\*(.+?)\*/g, "<em>$1</em>"),
                       }}
                     />
+                  )}
+
+                  {msg.plan && (
+                    <div className="mt-3 p-3.5 bg-white border border-indigo-200 rounded-xl shadow-xs space-y-2.5 text-slate-800">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                          Proposed Agent Execution Plan
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {msg.plan.actions.length} action(s)
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        {msg.plan.actions.map((act) => (
+                          <div
+                            key={act.id}
+                            className="p-2 bg-slate-50 rounded-lg text-[11px] border border-slate-100 flex items-start gap-2"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 mt-1.5 flex-shrink-0" />
+                            <span className="text-slate-700 leading-snug">{act.description}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {msg.executionResult ? (
+                        <div className="p-2 rounded-lg bg-emerald-50 text-emerald-800 text-[11px] font-semibold flex items-center gap-1.5 border border-emerald-200">
+                          <IconCheck className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>{msg.executionResult}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => msg.plan && handleExecuteAgentPlan(msg.id, msg.plan)}
+                            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs"
+                          >
+                            Approve Plan & Execute
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
                 <span className="text-[10px] text-slate-400 mt-1 px-1">
@@ -2437,6 +2981,222 @@ export function EventWorkspace({
           </div>
         </div>
       )}
+      {/* Schedule Meeting Modal */}
+      {isAddMeetingOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="relative w-full max-w-md bg-white border border-slate-200/90 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/60">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
+                  <IconVideo className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#1E1B4B]">Schedule Event Sync</h3>
+                  <p className="text-xs text-slate-500">Create a briefing room or committee sync</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddMeetingOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <IconX className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddMeetingSubmit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Meeting Title <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Stage Logistics & Safety Briefing"
+                  value={newMeetingTitle}
+                  onChange={(e) => setNewMeetingTitle(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Date</label>
+                  <input
+                    type="text"
+                    value={newMeetingDate}
+                    onChange={(e) => setNewMeetingDate(e.target.value)}
+                    placeholder="e.g. Oct 24, 2026"
+                    className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Time</label>
+                  <input
+                    type="text"
+                    value={newMeetingTime}
+                    onChange={(e) => setNewMeetingTime(e.target.value)}
+                    placeholder="e.g. 4:00 PM"
+                    className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Location / Room</label>
+                <input
+                  type="text"
+                  value={newMeetingLocation}
+                  onChange={(e) => setNewMeetingLocation(e.target.value)}
+                  placeholder="e.g. Student Center 204 or Zoom"
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Meeting Type</label>
+                <select
+                  value={newMeetingType}
+                  onChange={(e) => setNewMeetingType(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                >
+                  <option value="Standup">Daily Standup</option>
+                  <option value="Committee Sync">Committee Sync</option>
+                  <option value="Briefing">Safety & Logistics Briefing</option>
+                  <option value="Vendor Review">Vendor Review</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Video Call Link (Optional)</label>
+                <input
+                  type="url"
+                  placeholder="https://meet.google.com/..."
+                  value={newMeetingLink}
+                  onChange={(e) => setNewMeetingLink(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsAddMeetingOpen(false)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm cursor-pointer"
+                >
+                  Schedule Sync
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Attach Document Modal */}
+      {isAddDocOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="relative w-full max-w-md bg-white border border-slate-200/90 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/60">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
+                  <IconFileText className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#1E1B4B]">Attach Event Document</h3>
+                  <p className="text-xs text-slate-500">Link permits, run-of-show, or contracts</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddDocOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <IconX className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddDocSubmit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Document Title <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Sound & Stage Safety Permit"
+                  value={newDocTitle}
+                  onChange={(e) => setNewDocTitle(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Category</label>
+                <select
+                  value={newDocCategory}
+                  onChange={(e) => setNewDocCategory(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                >
+                  <option value="Permits & Safety">Permits & Safety</option>
+                  <option value="Contracts">Vendor Contracts</option>
+                  <option value="Sponsorship & Budget">Sponsorship & Budget</option>
+                  <option value="Run of Show">Run of Show & Agenda</option>
+                  <option value="General">General</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Document / Asset Link <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="url"
+                  required
+                  placeholder="https://drive.google.com/..."
+                  value={newDocUrl}
+                  onChange={(e) => setNewDocUrl(e.target.value)}
+                  className="w-full px-3 py-2 text-xs text-slate-900 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsAddDocOpen(false)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm cursor-pointer"
+                >
+                  Attach Asset
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Right-Side Eventra AI Panel Drawer */}
+      <EventraDrawer
+        isOpen={isEventraDrawerOpen}
+        onClose={() => setIsEventraDrawerOpen(false)}
+        event={event}
+        club={club}
+        currentUserId={currentUserId}
+        teamMembers={teamMembers}
+        eventTasks={eventTasks}
+        onTasksUpdated={handleRetryLoadTasks}
+        initialPrompt={eventraInitialPrompt}
+      />
     </div>
   );
 }

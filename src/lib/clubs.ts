@@ -110,13 +110,12 @@ export async function fetchUserClubs(userId?: string): Promise<{ clubs: Club[]; 
   }
 
   const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  const activeUserId = userId || user?.id;
+  const activeUserId = userId || session?.user?.id;
 
-  if (userError || !activeUserId) {
+  if (!session || !activeUserId) {
     return { clubs: [], error: null };
   }
 
@@ -128,6 +127,15 @@ export async function fetchUserClubs(userId?: string): Promise<{ clubs: Club[]; 
     .order("created_at", { ascending: false });
 
   if (ownedError) {
+    const isPermissionError =
+      ownedError.code === "42501" ||
+      ownedError.message.toLowerCase().includes("permission denied");
+
+    if (isPermissionError) {
+      console.warn("Permission issue querying owned clubs, returning empty list:", ownedError.message);
+      return { clubs: [], error: null };
+    }
+
     console.error("Error fetching owned clubs from Supabase:", ownedError);
     return { clubs: [], error: ownedError.message };
   }
@@ -297,12 +305,15 @@ export async function joinClubByCode(
   clubCode: string,
   userId?: string,
   userEmail?: string,
-  userName?: string
+  userName?: string,
+  role?: string
 ): Promise<JoinClubResult> {
   const trimmedCode = clubCode.trim().toUpperCase();
   if (!trimmedCode) {
     return { success: false, error: "Please enter a club code." };
   }
+
+  const memberRole = (role?.trim() || "Registration") as ClubRole;
 
   // Development fallback when .env.local is not configured
   if (!isSupabaseConfigured) {
@@ -355,7 +366,7 @@ export async function joinClubByCode(
       name: userName || activeUserEmail.split("@")[0] || "Member",
       email: activeUserEmail,
       clubId: matchedClub.id,
-      role: "Registration",
+      role: memberRole,
       joinedAt: new Date().toISOString().split("T")[0],
     };
     saveDemoMember(newDemoMember);
@@ -447,7 +458,7 @@ export async function joinClubByCode(
     };
   }
 
-  // 4. Create the member record in Supabase with default role 'Registration'
+  // 4. Create the member record in Supabase with user selected role
   const email = activeUser.email || userEmail || "member@example.com";
   const name =
     userName ||
@@ -461,7 +472,7 @@ export async function joinClubByCode(
       user_id: activeUser.id,
       name,
       email,
-      role: "Registration",
+      role: memberRole,
     })
     .select()
     .single();

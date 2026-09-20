@@ -37,6 +37,7 @@ import {
 import { detectEventRisks } from "@/lib/risks";
 import {
   createEventInSupabase,
+  updateEventInSupabase,
   type CreateEventParams,
 } from "@/lib/events";
 import {
@@ -201,17 +202,42 @@ export async function tool_create_event(
  * Will NOT execute unless action.status === "approved".
  */
 export async function tool_update_event(
-  action: AgentAction
+  action: AgentAction,
+  userId?: string
 ): Promise<AgentToolResult<ClubEvent>> {
   const blocked = requireApproval(action);
   if (blocked) return blocked as AgentToolResult<ClubEvent>;
 
-  // TODO (Step 5.2): wire to updateEventInSupabase when that function is added
-  return {
-    success: false,
-    error:
-      "tool_update_event is a planned action — implementation will be completed in Step 5.2.",
+  const p = action.payload as {
+    eventId?: string;
+    field?: string;
+    value?: unknown;
+    updates?: Record<string, unknown>;
   };
+
+  if (!p.eventId) {
+    return {
+      success: false,
+      error: "update_event requires eventId in action.payload.",
+    };
+  }
+
+  const updateObject: Record<string, unknown> = p.updates ? { ...p.updates } : {};
+  if (p.field && p.value !== undefined) {
+    updateObject[p.field] = p.value;
+  }
+
+  const { event, error } = await updateEventInSupabase(
+    p.eventId,
+    updateObject as Partial<CreateEventParams>,
+    userId
+  );
+
+  if (error || !event) {
+    return { success: false, error: error ?? "Unknown error updating event." };
+  }
+
+  return { success: true, data: event };
 }
 
 /**

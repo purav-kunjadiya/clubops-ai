@@ -21,13 +21,6 @@ import { InboxModal } from "@/components/inbox-modal";
 import { CreateEventModal } from "@/components/create-event-modal";
 import { CreateClubModal } from "@/components/create-club-modal";
 import { JoinClubModal } from "@/components/join-club-modal";
-import {
-  MOCK_CLUBS,
-  MOCK_MEMBERS,
-  MOCK_EVENTS,
-  MOCK_TASKS,
-  MOCK_INBOX,
-} from "@/components/mock-data";
 import type { Club, ClubMember, ClubRole, ClubEvent, InboxItem, TaskItem, TaskStatus } from "@/components/types";
 import {
   IconPlus,
@@ -68,12 +61,12 @@ export default function Home() {
   const [eventsError, setEventsError] = useState<string | null>(null);
 
   // Dynamic state — all arrays start empty (zero demo data)
-  const [clubs, setClubs] = useState<Club[]>(MOCK_CLUBS);
-  const [members, setMembers] = useState<ClubMember[]>(MOCK_MEMBERS);
-  const [activeClub, setActiveClub] = useState<Club | null>(MOCK_CLUBS[0] ?? null);
-  const [events, setEvents] = useState<ClubEvent[]>(MOCK_EVENTS);
-  const [tasks, setTasks] = useState<TaskItem[]>(MOCK_TASKS);
-  const [inboxItems, setInboxItems] = useState<InboxItem[]>(MOCK_INBOX);
+  const [clubs, setClubs] = useState<Club[]>([]);
+  const [members, setMembers] = useState<ClubMember[]>([]);
+  const [activeClub, setActiveClub] = useState<Club | null>(null);
+  const [events, setEvents] = useState<ClubEvent[]>([]);
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
 
   // Fetch user's clubs from Supabase when authenticated (initial load & refresh)
   useEffect(() => {
@@ -436,10 +429,12 @@ export default function Home() {
           <div className="pt-2 flex items-center justify-center gap-3">
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 if (!auth.user) return;
                 setClubsError(null);
                 setLoadingClubs(true);
+                const { supabase } = await import("@/lib/supabase");
+                await supabase.auth.getSession();
                 fetchUserClubs(auth.user.id).then(({ clubs: fetchedClubs, error }) => {
                   setLoadingClubs(false);
                   if (error) {

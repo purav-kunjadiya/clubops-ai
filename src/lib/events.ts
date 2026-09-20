@@ -220,6 +220,60 @@ export async function createEventInSupabase(
   return { event: createdEvent, error: null };
 }
 
+/**
+ * Update an existing event in Supabase.
+ */
+export async function updateEventInSupabase(
+  eventId: string,
+  updates: Partial<CreateEventParams>,
+  userId?: string
+): Promise<{ event: ClubEvent | null; error: string | null }> {
+  if (!eventId) {
+    return { event: null, error: "Event ID is required." };
+  }
+
+  if (!isSupabaseConfigured) {
+    return { event: null, error: "Supabase is not configured." };
+  }
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  const activeUserId = userId || user?.id;
+  if (userError || !activeUserId) {
+    return { event: null, error: "You must be signed in to update an event." };
+  }
+
+  const dbUpdates: Record<string, unknown> = {};
+  if (updates.title) dbUpdates.title = updates.title.trim();
+  if (updates.description) dbUpdates.description = updates.description.trim();
+  if (updates.category) dbUpdates.category = updates.category;
+  if (updates.date) dbUpdates.date = updates.date.trim();
+  if (updates.time) dbUpdates.time = updates.time.trim();
+  if (updates.location) dbUpdates.location = updates.location.trim();
+  if (updates.capacity) dbUpdates.capacity = updates.capacity;
+  if (updates.budgetAllocated) dbUpdates.budget_allocated = updates.budgetAllocated;
+  if (updates.leadName) dbUpdates.lead_name = updates.leadName.trim();
+  if (updates.leadRole) dbUpdates.lead_role = updates.leadRole.trim();
+  if (updates.leadMemberId) dbUpdates.lead_member_id = updates.leadMemberId;
+
+  const { data, error } = await supabase
+    .from("events")
+    .update(dbUpdates)
+    .eq("id", eventId)
+    .select()
+    .single();
+
+  if (error || !data) {
+    console.error("Error updating event in Supabase:", error);
+    return { event: null, error: error?.message ?? "Failed to update event." };
+  }
+
+  return { event: mapRowToClubEvent(data as unknown as EventRow), error: null };
+}
+
 const DEMO_EVENT_TEAM_STORAGE_KEY = "clubops_demo_event_team";
 
 function getDemoEventTeam(eventId?: string): EventTeamMember[] {

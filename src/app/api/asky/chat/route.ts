@@ -746,10 +746,124 @@ function generateHeuristicResponse(
   return reply;
 }
 
+export const GEMINI_EVENTRA_TOOLS = [
+  {
+    functionDeclarations: [
+      {
+        name: "tool_create_event",
+        description: "Propose creating a new event in the current club workspace.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            title: { type: "STRING", description: "Title or name of the event" },
+            category: {
+              type: "STRING",
+              enum: ["Hackathon", "Workshop", "Social", "Speaker", "Competition"],
+              description: "Category of event"
+            },
+            date: { type: "STRING", description: "Event date (e.g., 15 October 2026)" },
+            time: { type: "STRING", description: "Event time window" },
+            location: { type: "STRING", description: "Event location or venue" },
+            capacity: { type: "NUMBER", description: "Expected attendee capacity" },
+            budgetAllocated: { type: "NUMBER", description: "Allocated budget" }
+          },
+          required: ["title"]
+        }
+      },
+      {
+        name: "tool_update_event",
+        description: "Propose updating fields on the currently open event.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            eventId: { type: "STRING", description: "Event ID to update" },
+            field: {
+              type: "STRING",
+              enum: ["title", "date", "time", "location", "capacity", "status", "category"],
+              description: "Field name to update"
+            },
+            value: { type: "STRING", description: "New value for the field" }
+          },
+          required: ["field", "value"]
+        }
+      },
+      {
+        name: "tool_create_task",
+        description: "Propose creating a new task for the current event.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            title: { type: "STRING", description: "Task title" },
+            priority: {
+              type: "STRING",
+              enum: ["Low", "Medium", "High", "Urgent"],
+              description: "Task priority level"
+            },
+            dueText: { type: "STRING", description: "Due date or relative deadline" },
+            assigneeName: { type: "STRING", description: "Name of team member to assign" },
+            assigneeRole: { type: "STRING", description: "Role of team member" }
+          },
+          required: ["title"]
+        }
+      },
+      {
+        name: "tool_update_task",
+        description: "Propose updating status or details of a task.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            taskId: { type: "STRING", description: "Task ID" },
+            field: {
+              type: "STRING",
+              enum: ["status", "priority", "dueText", "completed"],
+              description: "Field name to update"
+            },
+            value: { type: "STRING", description: "New value" }
+          },
+          required: ["taskId", "field", "value"]
+        }
+      },
+      {
+        name: "tool_assign_task",
+        description: "Propose assigning a task to a team member.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            taskId: { type: "STRING", description: "ID of task to assign" },
+            assigneeName: { type: "STRING", description: "Target team member name" },
+            assigneeRole: { type: "STRING", description: "Target team member role" }
+          },
+          required: ["taskId", "assigneeName"]
+        }
+      },
+      {
+        name: "tool_create_dependency",
+        description: "Propose establishing a dependency between two tasks.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            taskId: { type: "STRING", description: "Task that depends on another task" },
+            dependsOnTaskId: { type: "STRING", description: "Prerequisite task ID" }
+          },
+          required: ["taskId", "dependsOnTaskId"]
+        }
+      }
+    ]
+  }
+];
+
 export async function POST(req: Request) {
+  let trimmedPrompt = "";
+  let contextData: AskyChatRequestBody["context"] = undefined;
+
   try {
-    const body: AskyChatRequestBody = await req.json();
-    const { prompt, context } = body;
+    const body: AskyChatRequestBody & {
+      previousFunctionCalls?: Record<string, unknown>[];
+      modelParts?: unknown[];
+      toolResults?: { name: string; result: Record<string, unknown> }[];
+    } = await req.json();
+
+    const { prompt, context, previousFunctionCalls, modelParts, toolResults } = body;
 
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return NextResponse.json(
@@ -758,24 +872,25 @@ export async function POST(req: Request) {
       );
     }
 
-    const trimmedPrompt = prompt.trim();
+    trimmedPrompt = prompt.trim();
+    contextData = context;
     const apiKey = process.env.GEMINI_API_KEY;
 
-    // If Gemini API key is missing or blank, use heuristic engine with rich context
+    // If Gemini API key is missing or blank, fallback to heuristic engine
     if (!apiKey) {
-      const answer = generateHeuristicResponse(trimmedPrompt, context);
+      const answer = generateHeuristicResponse(trimmedPrompt, contextData);
       return NextResponse.json({
         answer,
         usedFallback: true,
       });
     }
 
-    // Build rich context prompt for Gemini
-    const event = context?.event;
-    const tasks = context?.tasks || [];
-    const teamMembers = context?.teamMembers || [];
-    const workloads = context?.workloads || [];
-    const risks = context?.risks || [];
+    // Context details
+    const event = contextData?.event;
+    const tasks = contextData?.tasks || [];
+    const teamMembers = contextData?.teamMembers || [];
+    const workloads = contextData?.workloads || [];
+    const risks = contextData?.risks || [];
 
     const now = new Date().toISOString().split("T")[0];
 
@@ -805,7 +920,7 @@ ${
     ? tasks
         .map(
           (t) =>
-            `- "${t.title}" | Status: ${t.status || (t.completed ? "Done" : "Todo")} | Priority: ${t.priority} | Deadline: ${t.deadline || t.dueText || "None"} | Assigned: ${t.assigneeName || "Unassigned"} (${t.assigneeRole || "N/A"})`
+            `- ID: "${t.id}" | Title: "${t.title}" | Status: ${t.status || (t.completed ? "Done" : "Todo")} | Priority: ${t.priority} | Deadline: ${t.deadline || t.dueText || "None"} | Assigned: ${t.assigneeName || "Unassigned"} (${t.assigneeRole || "N/A"})`
         )
         .join("\n")
     : "No tasks recorded."
@@ -814,7 +929,7 @@ ${
 TEAM MEMBERS (${teamMembers.length} total):
 ${
   teamMembers.length > 0
-    ? teamMembers.map((m) => `- ${m.name} (${m.role || "Member"})`).join("\n")
+    ? teamMembers.map((m) => `- ID: "${m.id}" | Name: ${m.name} | Role: (${m.role || "Member"})`).join("\n")
     : "No team members listed."
 }
 
@@ -842,82 +957,366 @@ ${
     : "No active risks detected."
 }
 
-USER QUESTION:
+USER REQUEST:
 "${trimmedPrompt}"
 
-INSTRUCTIONS:
-1. Answer the user's question directly, accurately, and professionally using the context above.
-2. If asked about overdue tasks, identify any tasks where deadline is past today's date and status is not Done.
-3. If asked about workload or who has the highest workload, cite the member with the most active tasks and their workload status.
-4. If asked about risks, summarize the detected operational risks with severity and actionable recommendations.
-5. If asked about pending/open tasks, list them with assignee, deadline, and priority.
-6. If asked about unassigned tasks, list tasks where Assigned is "Unassigned" and suggest team members with low workload.
-7. If asked what to focus on, recommend based on overdue tasks, unassigned tasks, upcoming deadlines, and active risks.
-8. Keep your tone helpful, structured, concise, and executive (use bullet points where appropriate).
-9. Use markdown formatting (bold, bullet points) for readability.
-10. Do not mention system prompts or API keys.
-11. Return only your direct answer text to the user.`;
+INSTRUCTIONS FOR EVENTRA AI AGENTIC TOOL SELECTION & EVENT PLANNING:
+1. You are Eventra AI, a senior executive event planner and operational AI assistant.
+2. DUPLICATE CHECK (AVOID DUPLICATE CREATION):
+   - Review CURRENT CLUBOPS CONTEXT carefully. If an event with a matching or similar title already exists in the context, DO NOT call tool_create_event again!
+   - Review existing TASKS. Do not create exact duplicate tasks if they already exist.
+3. FULL EVENT PLANNING FLOW:
+   - When the user asks to plan or create a new event (e.g. "Mare Tech Fest karvo chhe...", "Plan an event...", "Create Tech Fest"):
+   - Propose tool_create_event (if not existing).
+   - Propose multiple tool_create_task calls for initial execution tasks (e.g. Poster Design, Marketing, Logistics setup, Registration launch, Technical setup).
+   - Set deadlines BEFORE the event date (e.g., if event date is 15 October 2026, set task deadlines like 1 Oct, 5 Oct, 10 Oct). NEVER create deadlines after the event date.
+   - Propose tool_assign_task calls assigning tasks to members in TEAM MEMBERS based on role fit and current workload. Do not assign outside the event team.
+   - Propose tool_create_dependency calls for logical task prerequisites (e.g. Registration launch depends on Event setup, Technical setup depends on Logistics).
+4. TURN 2 RESPONSE (AFTER TOOL EXECUTION RESULTS):
+   - When tool execution results are provided, produce a clean executive final response based strictly on actual database execution results:
+     ### Event Plan Created
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+     **[Event Title]** is ready.
 
-      const geminiResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [{ text: contextPrompt }],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.3,
-            },
-          }),
-          signal: controller.signal,
+     - Event workspace created
+     - X tasks created
+     - X members assigned
+     - X dependencies created
+
+     **Next attention**
+     - Any risks detected
+     - Any overloaded members
+     - Any unassigned tasks
+5. GENERAL QUESTIONS & QUERIES:
+   - If no tool calls are needed, respond directly with short, executive Markdown formatted text with headings and bullet points. Never use fake progress or long paragraphs.`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+    const callGemini = async (contents: unknown[], tools?: unknown[]) => {
+      const modelsToTry = ["gemini-2.5-flash", "gemini-flash-latest"];
+      let lastRes: Response | null = null;
+      let lastErrText = "";
+
+      for (const modelName of modelsToTry) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents,
+                tools,
+                generationConfig: { temperature: 0.2 },
+              }),
+              signal: controller.signal,
+            }
+          );
+
+          if (res.ok) {
+            return await res.json();
+          }
+
+          lastRes = res;
+          lastErrText = await res.text();
+          if (res.status === 404) {
+            break;
+          }
+          if ((res.status === 503 || res.status === 429) && attempt === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
+          throw new Error(`Gemini API returned status ${res.status}: ${lastErrText}`);
         }
-      );
+      }
 
+      throw new Error(`Gemini API returned status ${lastRes?.status || 500}: ${lastErrText}`);
+    };
+
+    // TURN 2: Responding after Tool Execution Result
+    if (toolResults && toolResults.length > 0 && (previousFunctionCalls || modelParts)) {
+      const contents = [
+        {
+          role: "user",
+          parts: [{ text: contextPrompt }]
+        },
+        {
+          role: "model",
+          parts: modelParts && modelParts.length > 0
+            ? modelParts
+            : (previousFunctionCalls || []).map((fc) => ({ functionCall: fc }))
+        },
+        {
+          role: "user",
+          parts: toolResults.map((tr) => ({
+            functionResponse: {
+              name: tr.name,
+              response: tr.result
+            }
+          }))
+        }
+      ];
+
+      const geminiData = await callGemini(contents, GEMINI_EVENTRA_TOOLS);
       clearTimeout(timeoutId);
 
-      if (!geminiResponse.ok) {
-        throw new Error(`Gemini API returned status ${geminiResponse.status}`);
-      }
-
-      const geminiData = await geminiResponse.json();
-      const rawText =
-        geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
-      if (!rawText) {
-        throw new Error("Empty response returned from Gemini API");
-      }
+      const partsArray = geminiData?.candidates?.[0]?.content?.parts as Array<Record<string, unknown>> | undefined;
+      const finalAnswer =
+        partsArray
+          ?.filter((p) => typeof p.text === "string")
+          ?.map((p) => p.text as string)
+          ?.join("\n") || "Done — action completed.";
 
       return NextResponse.json({
-        answer: rawText,
-        usedFallback: false,
-      });
-    } catch (apiError) {
-      console.warn(
-        "Gemini API call failed, using intelligent context fallback:",
-        apiError
-      );
-      const fallbackAnswer = generateHeuristicResponse(trimmedPrompt, context);
-      return NextResponse.json({
-        answer: fallbackAnswer,
-        usedFallback: true,
+        answer: finalAnswer,
+        proposedPlan: null,
+        usedGeminiTools: true
       });
     }
-  } catch (error) {
-    console.error("Error in /api/asky/chat:", error);
-    return NextResponse.json(
-      {
-        error:
-          "Failed to process question with Eventra AI. Please try again.",
-      },
-      { status: 500 }
+
+    // TURN 1: Initial Reasoning & Function Call Decision
+    const geminiData = await callGemini(
+      [{ role: "user", parts: [{ text: contextPrompt }] }],
+      GEMINI_EVENTRA_TOOLS
     );
+    clearTimeout(timeoutId);
+    const candidateParts = (geminiData?.candidates?.[0]?.content?.parts as Array<Record<string, unknown>> | undefined) || [];
+
+    const rawFunctionCalls = candidateParts
+      .filter((p) => p.functionCall)
+      .map((p) => p.functionCall as Record<string, unknown>);
+
+    const rawText = candidateParts
+      .filter((p) => typeof p.text === "string")
+      .map((p) => p.text as string)
+      .join("\n")
+      .trim();
+
+    // If Gemini chose function calls (tools), convert them into Eventra proposed actions
+    if (rawFunctionCalls.length > 0) {
+      const actions: import("@/lib/agent").AgentAction[] = [];
+
+      for (const fc of rawFunctionCalls) {
+        const name = String(fc.name || "");
+        const args = (fc.args as Record<string, unknown>) || {};
+
+        if (name === "tool_create_event") {
+          const title = String(args.title || "Tech Fest 2026").trim();
+          const date = String(args.date || "15 October 2026").trim();
+          const location = String(args.location || "Campus Center").trim();
+          const capacity = Number(args.capacity) || 500;
+          const category = String(args.category || "Workshop");
+
+          actions.push({
+            id: "agent-" + Math.random().toString(36).substring(2, 11),
+            type: "CREATE_EVENT",
+            description: `Create Event: "${title}" on ${date} at ${location} (~${capacity} attendees)`,
+            requiresApproval: true,
+            payload: {
+              clubId: event?.id || "club-1",
+              title,
+              category,
+              date,
+              time: String(args.time || "10:00 AM - 6:00 PM"),
+              location,
+              capacity,
+              budgetAllocated: Number(args.budgetAllocated) || 1500,
+              leadName: "Event Lead",
+              leadRole: "Event Lead",
+            },
+            status: "proposed",
+          });
+        } else if (name === "tool_create_task") {
+          const title = String(args.title || "New Task").trim();
+          const priorityStr = String(args.priority || "Medium");
+          const priority = (["Low", "Medium", "High", "Urgent"].includes(priorityStr)
+            ? priorityStr
+            : "Medium") as "Low" | "Medium" | "High" | "Urgent";
+          const dueText = String(args.dueText || "Upcoming").trim();
+          const reqAssignee = String(args.assigneeName || "Unassigned").trim();
+
+          // Match member from context for security & alignment
+          const matchedMember = teamMembers.find(
+            (m) => m.name.toLowerCase() === reqAssignee.toLowerCase()
+          );
+
+          actions.push({
+            id: "agent-" + Math.random().toString(36).substring(2, 11),
+            type: "CREATE_TASK",
+            description: `Task: "${title}" → Assign: ${matchedMember ? matchedMember.name : reqAssignee} [${priority}]`,
+            requiresApproval: true,
+            payload: {
+              clubId: event?.id || "club-1",
+              eventId: event?.id || "",
+              title,
+              eventTag: event?.title || "General",
+              priority,
+              dueText,
+              deadline: dueText,
+              assigneeName: matchedMember ? matchedMember.name : reqAssignee,
+              assigneeRole: matchedMember ? (matchedMember.role || "Member") : String(args.assigneeRole || "Member"),
+              assigneeMemberId: matchedMember?.id,
+              status: "Todo",
+              dependencies: [],
+            },
+            status: "proposed",
+          });
+        } else if (name === "tool_assign_task") {
+          const reqTaskId = String(args.taskId || "").trim();
+          const reqAssignee = String(args.assigneeName || "").trim();
+
+          const matchedTask = tasks.find(
+            (t) => t.id === reqTaskId || t.title.toLowerCase().includes(reqTaskId.toLowerCase())
+          );
+
+          const matchedMember = teamMembers.find(
+            (m) => m.name.toLowerCase() === reqAssignee.toLowerCase()
+          );
+
+          if (matchedTask || reqTaskId) {
+            actions.push({
+              id: "agent-" + Math.random().toString(36).substring(2, 11),
+              type: "ASSIGN_TASK",
+              description: `Assign Task: "${matchedTask ? matchedTask.title : reqTaskId}" → ${matchedMember ? matchedMember.name : reqAssignee}`,
+              requiresApproval: true,
+              payload: {
+                taskId: matchedTask ? matchedTask.id : reqTaskId,
+                assigneeName: matchedMember ? matchedMember.name : reqAssignee,
+                assigneeRole: matchedMember ? matchedMember.role : String(args.assigneeRole || "Member"),
+                assigneeMemberId: matchedMember?.id,
+              },
+              status: "proposed",
+            });
+          }
+        } else if (name === "tool_update_event") {
+          actions.push({
+            id: "agent-" + Math.random().toString(36).substring(2, 11),
+            type: "UPDATE_EVENT_FIELD",
+            description: `Update Event: Change ${args.field} to "${args.value}"`,
+            requiresApproval: true,
+            payload: {
+              eventId: String(args.eventId || event?.id),
+              field: String(args.field),
+              value: args.value,
+            },
+            status: "proposed",
+          });
+        } else if (name === "tool_update_task") {
+          actions.push({
+            id: "agent-" + Math.random().toString(36).substring(2, 11),
+            type: "UPDATE_TASK_FIELD",
+            description: `Update Task (${args.taskId}): Change ${args.field} to "${args.value}"`,
+            requiresApproval: true,
+            payload: {
+              taskId: String(args.taskId),
+              field: String(args.field),
+              value: args.value,
+            },
+            status: "proposed",
+          });
+        } else if (name === "tool_create_dependency") {
+          actions.push({
+            id: "agent-" + Math.random().toString(36).substring(2, 11),
+            type: "CREATE_TASK_DEPENDENCY",
+            description: `Dependency: Task ${args.taskId} depends on ${args.dependsOnTaskId}`,
+            requiresApproval: true,
+            payload: {
+              taskId: String(args.taskId),
+              dependsOnTaskId: String(args.dependsOnTaskId),
+            },
+            status: "proposed",
+          });
+        }
+      }
+
+      if (actions.length > 0) {
+        const createEvtAction = actions.find((a) => a.type === "CREATE_EVENT");
+        const evtPayload = (createEvtAction?.payload || {}) as Record<string, unknown>;
+        const eventTitle = String(evtPayload.title || event?.title || "Event Plan");
+        const eventDate = String(evtPayload.date || event?.date || "TBD");
+        const eventLoc = String(evtPayload.location || event?.location || "TBD");
+        const eventCap = String(evtPayload.capacity || event?.capacity || "500");
+
+        const taskActions = actions.filter((a) => a.type === "CREATE_TASK");
+        const depActions = actions.filter((a) => a.type === "CREATE_TASK_DEPENDENCY");
+
+        const teamSet = new Set<string>();
+        for (const ta of taskActions) {
+          const p = ta.payload as Record<string, unknown>;
+          if (p.assigneeRole) teamSet.add(String(p.assigneeRole));
+          if (p.assigneeName && p.assigneeName !== "Unassigned") teamSet.add(String(p.assigneeName));
+        }
+
+        let planSummary = `### ${eventTitle} — Event Plan\n\n`;
+        planSummary += `**Event**\n`;
+        planSummary += `- Date: **${eventDate}**\n`;
+        planSummary += `- Location: **${eventLoc}**\n`;
+        planSummary += `- Expected Attendees: **${eventCap}**\n\n`;
+
+        if (teamSet.size > 0) {
+          planSummary += `**Teams & Roles**\n`;
+          teamSet.forEach((t) => {
+            planSummary += `- ${t}\n`;
+          });
+          planSummary += `\n`;
+        }
+
+        if (taskActions.length > 0) {
+          planSummary += `**Initial Tasks (${taskActions.length})**\n`;
+          taskActions.forEach((ta, idx) => {
+            const p = ta.payload as Record<string, unknown>;
+            planSummary += `${idx + 1}. **${p.title}**\n`;
+            planSummary += `   Owner: ${p.assigneeName || p.assigneeRole || "Unassigned"} | Deadline: ${p.dueText || p.deadline || "TBD"} | Priority: ${p.priority || "Medium"}\n`;
+          });
+          planSummary += `\n`;
+        }
+
+        if (depActions.length > 0) {
+          planSummary += `**Dependencies (${depActions.length})**\n`;
+          depActions.forEach((da) => {
+            const p = da.payload as Record<string, unknown>;
+            planSummary += `- Task "${p.taskId}" depends on "${p.dependsOnTaskId || (p.dependencyIds as string[])?.[0] || "Prerequisite"}"\n`;
+          });
+          planSummary += `\n`;
+        }
+
+        planSummary += `**Approval Required**\nPlease review and approve below to execute this plan in Supabase.`;
+
+        const proposedPlan = {
+          userRequest: trimmedPrompt,
+          intent: createEvtAction ? "CREATE_EVENT" : actions[0].type,
+          reasoningSummary: planSummary,
+          actions,
+          requiresApproval: true,
+          createdAt: new Date().toISOString(),
+        };
+
+        return NextResponse.json({
+          answer: rawText || null,
+          proposedPlan,
+          functionCalls: rawFunctionCalls,
+          modelParts: candidateParts,
+          usedGeminiTools: true,
+        });
+      }
+    }
+
+    return NextResponse.json({
+      answer: rawText || "Here is your operational summary.",
+      proposedPlan: null,
+      usedGeminiTools: true,
+    });
+  } catch (apiError) {
+    console.warn(
+      "Gemini API call failed, using intelligent context fallback:",
+      apiError
+    );
+    const fallbackAnswer = generateHeuristicResponse(trimmedPrompt, contextData);
+    return NextResponse.json({
+      answer: fallbackAnswer,
+      usedFallback: true,
+    });
   }
 }
+

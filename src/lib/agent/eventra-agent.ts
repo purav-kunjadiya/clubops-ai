@@ -33,9 +33,12 @@
  * ────────────────────────────────────────────────────────────────────────────
  */
 
-import { randomUUID } from "crypto";
 import type { AgentPlan, AgentIntent, AgentAction } from "./types";
 import type { EventraAgentContext } from "./context";
+
+function generateId(): string {
+  return "agent-" + Math.random().toString(36).substring(2, 11);
+}
 import {
   tool_create_event,
   tool_create_task,
@@ -153,7 +156,7 @@ function buildQueryPlan(
     reasoningSummary,
     actions: [
       {
-        id: randomUUID(),
+        id: generateId(),
         type: "PROVIDE_ANSWER",
         description: "Return a data-driven answer to the user's question.",
         requiresApproval: false,
@@ -172,48 +175,98 @@ function buildQueryPlan(
  * Extracts structured fields from the user's free-text request as best it can.
  * These extracted values will be confirmed / refined by Gemini in Step 5.2.
  */
+function findBestAssignee(
+  roleNeeded: string,
+  teamMembers: import("@/components/types").EventTeamMember[],
+  workloads: Map<string, import("@/lib/workload").MemberWorkload>
+): { name: string; role: string; memberId?: string } {
+  if (!teamMembers || teamMembers.length === 0) {
+    return { name: "Unassigned", role: roleNeeded };
+  }
+
+  const matchingMembers = teamMembers.filter((m) =>
+    m.role.toLowerCase().includes(roleNeeded.toLowerCase())
+  );
+
+  const candidates = matchingMembers.length > 0 ? matchingMembers : teamMembers;
+
+  const sorted = [...candidates].sort((a, b) => {
+    const wA = workloads.get(a.id)?.activeCount ?? 0;
+    const wB = workloads.get(b.id)?.activeCount ?? 0;
+    return wA - wB;
+  });
+
+  const chosen = sorted[0];
+  return {
+    name: chosen.name,
+    role: chosen.role,
+    memberId: chosen.clubMemberId,
+  };
+}
+
+/**
+ * Builds a plan proposing the creation of a new event.
+ * Extracts structured fields from the user's free-text request.
+ */
 function buildCreateEventPlan(
   userRequest: string,
   context: EventraAgentContext
 ): AgentPlan {
-  // Simple extraction — will be replaced by Gemini JSON extraction in Step 5.2
   const extracted = extractEventParamsFromText(userRequest);
+  const titleToUse = extracted.title || "Tech Fest 2026";
+  const dateToUse = extracted.date || "15 October 2026";
+  const locToUse = extracted.location || "Campus Center";
+  const capToUse = extracted.capacity || 500;
+  const categoryToUse = extracted.category || "Workshop";
 
-  const action: AgentAction = {
-    id: randomUUID(),
+  const eventAction: AgentAction = {
+    id: generateId(),
     type: "CREATE_EVENT",
-    description: `Create a new event: "${extracted.title || "Untitled Event"}" on ${extracted.date || "a date to be confirmed"} at ${extracted.location || "a location to be confirmed"}.`,
+    description: `Create Event: "${titleToUse}" on ${dateToUse} at ${locToUse} (~${capToUse} attendees)`,
     requiresApproval: true,
     payload: {
       clubId: context.currentClub.id,
-      title: extracted.title || "New Event",
-      category: extracted.category || "Workshop",
-      date: extracted.date || "",
-      time: extracted.time || "6:00 PM",
-      location: extracted.location || "",
-      capacity: extracted.capacity,
-      budgetAllocated: extracted.budget,
-      leadName: "",
+      title: titleToUse,
+      category: categoryToUse,
+      date: dateToUse,
+      time: "10:00 AM - 6:00 PM",
+      location: locToUse,
+      capacity: capToUse,
+      budgetAllocated: 1500,
+      leadName: "Event Lead",
       leadRole: "Event Lead",
     },
     status: "proposed",
   };
 
+  const reasoningSummary = `### Event Plan
+
+**${titleToUse}**
+- 📅 ${dateToUse}
+- 📍 ${locToUse}
+- 👥 Expected: ${capToUse} attendees
+
+**I’ll prepare:**
+- Event workspace
+- Initial team structure
+- Operational task plan
+- Risk & workload tracking
+
+**Approval required**
+I’m ready to create this plan. Please approve below to proceed.`;
+
   return {
     userRequest,
     intent: "CREATE_EVENT",
-    reasoningSummary: `I understood that you want to organize a new event. I've prepared a proposal for "${extracted.title || "New Event"}" based on your request. Please review the details and approve to create it in your club workspace.`,
-    actions: [action],
+    reasoningSummary,
+    actions: [eventAction],
     requiresApproval: true,
     createdAt: new Date().toISOString(),
   };
 }
 
 /**
- * Builds a plan proposing task creation for the current event.
- * In Step 5.2, Gemini will generate a full breakdown of tasks with deadlines
- * and suggested assignees. Here we return a SUGGEST_PLAN action that signals
- * the intent so the UI can prompt Gemini.
+ * Builds a plan proposing task creation for an event with role & workload matching.
  */
 function buildCreateTasksPlan(
   userRequest: string,
@@ -223,34 +276,95 @@ function buildCreateTasksPlan(
     return buildErrorPlan(
       userRequest,
       "CREATE_TASKS",
-      "No event is currently open. Please open an event workspace before asking me to create tasks."
+      "No event workspace is currently open. Please open an event first."
     );
   }
 
-  const action: AgentAction = {
-    id: randomUUID(),
-    type: "SUGGEST_PLAN",
-    description: `Propose a task breakdown for "${context.currentEvent.title}".`,
-    requiresApproval: false,
-    payload: {
-      eventId: context.currentEvent.id,
-      userRequest,
-      teamSize: context.eventTeamMembers.length,
-      existingTaskCount: context.tasks.length,
+  const event = context.currentEvent;
+  const team = context.eventTeamMembers;
+  const workloads = context.workloads;
+
+  const taskTemplates = [
+    {
+      title: `Venue Booking & Campus Clearances`,
+      roleNeeded: "Logistics",
+      priority: "Urgent" as const,
+      dueText: "5 days before event",
     },
-    status: "proposed",
-    result: {
-      success: true,
-      data: "Task generation will be powered by Gemini in Step 5.2. Once Gemini proposes specific tasks, you will be able to review and approve each one before they are created.",
+    {
+      title: `Sponsorship Deck & Budget Proposal`,
+      roleNeeded: "Sponsorship",
+      priority: "High" as const,
+      dueText: "7 days before event",
     },
-  };
+    {
+      title: `Poster Design & Social Media Campaign`,
+      roleNeeded: "Marketing",
+      priority: "Medium" as const,
+      dueText: "4 days before event",
+    },
+    {
+      title: `Attendee Registration & Ticketing`,
+      roleNeeded: "Registration",
+      priority: "High" as const,
+      dueText: "3 days before event",
+    },
+    {
+      title: `Sound, Stage & Technical Setup`,
+      roleNeeded: "Technical",
+      priority: "High" as const,
+      dueText: "1 day before event",
+    },
+  ];
+
+  const actions: AgentAction[] = taskTemplates.map((tmpl) => {
+    const assignee = findBestAssignee(tmpl.roleNeeded, team, workloads);
+
+    return {
+      id: generateId(),
+      type: "CREATE_TASK",
+      description: `Task: "${tmpl.title}" → Assign: ${assignee.name} (${assignee.role}) [${tmpl.priority}]`,
+      requiresApproval: true,
+      payload: {
+        clubId: context.currentClub.id,
+        eventId: event.id,
+        title: tmpl.title,
+        eventTag: event.title,
+        priority: tmpl.priority,
+        dueText: tmpl.dueText,
+        deadline: tmpl.dueText,
+        assigneeName: assignee.name,
+        assigneeRole: assignee.role,
+        assigneeMemberId: assignee.memberId,
+        status: "Todo",
+        dependencies: [],
+      },
+      status: "proposed",
+    };
+  });
+
+  const reasoningSummary = `### Task Plan
+
+**${event.title}**
+- 📋 ${actions.length} operational tasks prepared
+- 👥 Matched to team roles and current workload
+
+**I’ll prepare:**
+- Logistics & venue clearances
+- Sponsorship deck & budget
+- Marketing campaign & posters
+- Registration & ticketing
+- Technical & sound setup
+
+**Approval required**
+I’m ready to add these tasks. Please approve below to proceed.`;
 
   return {
     userRequest,
     intent: "CREATE_TASKS",
-    reasoningSummary: `I understand you want to create tasks for "${context.currentEvent.title}". I currently have ${context.eventTeamMembers.length} team members and ${context.tasks.length} existing tasks as context. In the next step, Gemini will generate a full task plan for your review.`,
-    actions: [action],
-    requiresApproval: false,
+    reasoningSummary,
+    actions,
+    requiresApproval: true,
     createdAt: new Date().toISOString(),
   };
 }
@@ -267,7 +381,7 @@ function buildAnalyzeWorkloadPlan(
       userRequest,
       "ANALYZE_WORKLOAD",
       "Workload analysis requires an active event workspace.",
-      "Please open an event workspace to analyze team workload."
+      "Open an event workspace to analyze team workload."
     );
   }
 
@@ -283,24 +397,24 @@ function buildAnalyzeWorkloadPlan(
     .slice(0, 6)
     .map(
       (w) =>
-        `• **${w.name}** (${w.role}): ${w.activeCount} active tasks, ${w.overdueCount} overdue — ${w.workloadState}`
+        `- **${w.name}** (${w.role}): ${w.activeCount} active tasks, ${w.overdueCount} overdue — *${w.workloadState}*`
     )
     .join("\n");
 
   const recommendation =
     overloaded.length > 0
-      ? `\n\n⚠️ **${overloaded.length} member${overloaded.length > 1 ? "s" : ""} with High/Overloaded workload.** Consider redistributing tasks from ${overloaded[0].name} to a lighter-load team member.`
-      : "\n\n✅ Team workload is balanced.";
+      ? `\n\n**Action Recommended:**\nConsider redistributing tasks from **${overloaded[0].name}** to lower-load members.`
+      : "\n\n**Status:** Team workload is balanced.";
 
   const answerText =
     workloadArray.length === 0
-      ? `No team members have been added to "${context.currentEvent.title}" yet.`
-      : `**Workload Analysis — ${context.currentEvent.title}:**\n\n${summary}${recommendation}`;
+      ? `### Workload Analysis\n\nNo team members assigned to **${context.currentEvent.title}** yet.`
+      : `### Workload Analysis\n\n**${context.currentEvent.title}**\n\n${summary}${recommendation}`;
 
   return buildQueryPlan(
     userRequest,
     "ANALYZE_WORKLOAD",
-    "I computed live workloads from your event team's current task assignments.",
+    "Live workload analysis based on current task assignments.",
     answerText
   );
 }
@@ -317,7 +431,7 @@ function buildDetectRisksPlan(
       userRequest,
       "DETECT_RISKS",
       "Risk detection requires an active event workspace.",
-      "Please open an event workspace to detect risks."
+      "Open an event workspace to analyze operational risks."
     );
   }
 
@@ -325,24 +439,24 @@ function buildDetectRisksPlan(
     return buildQueryPlan(
       userRequest,
       "DETECT_RISKS",
-      "I analyzed your event data and found no active risks.",
-      `✅ No operational risks detected for "${context.currentEvent.title}". All tasks, workloads, and deadlines appear on track.`
+      "No active risks detected.",
+      `### Risk Assessment\n\n**${context.currentEvent.title}**\n- Status: All operations on track\n- Tasks & deadlines: Normal\n- Team capacity: Balanced`
     );
   }
 
   const riskList = context.risks
     .map(
       (r) =>
-        `• **[${r.severity}] ${r.title}** — ${r.description}${r.evidence ? ` *(${r.evidence})*` : ""}`
+        `- **[${r.severity}] ${r.title}**\n  ${r.description}${r.evidence ? ` *(${r.evidence})*` : ""}`
     )
-    .join("\n");
+    .join("\n\n");
 
-  const answerText = `⚠️ **${context.risks.length} active risk${context.risks.length !== 1 ? "s" : ""} for "${context.currentEvent.title}":**\n\n${riskList}`;
+  const answerText = `### Operational Risks\n\nI found **${context.risks.length} issue${context.risks.length !== 1 ? "s" : ""}** requiring attention for **${context.currentEvent.title}**:\n\n${riskList}`;
 
   return buildQueryPlan(
     userRequest,
     "DETECT_RISKS",
-    `I analyzed your event's tasks, deadlines, and team workloads and detected ${context.risks.length} operational risk${context.risks.length !== 1 ? "s" : ""}.`,
+    `Detected ${context.risks.length} operational risk${context.risks.length !== 1 ? "s" : ""}.`,
     answerText
   );
 }
@@ -378,81 +492,83 @@ function buildGeneralQueryPlan(
   );
 
   if (!event) {
-    answerText =
-      `You are viewing the club-level dashboard for **${context.currentClub.name}**. Open an event workspace to get event-specific insights.`;
+    answerText = `### Dashboard Overview\n\nViewing **${context.currentClub.name}**.\n\nOpen an event workspace to get specific event insights.`;
   } else if (
     q.includes("overdue") || q.includes("late") || q.includes("past due")
   ) {
     answerText =
       overdueTasks.length === 0
-        ? `✅ No overdue tasks for "${event.title}".`
-        : `⚠️ **${overdueTasks.length} overdue task${overdueTasks.length !== 1 ? "s" : ""}**:\n\n` +
+        ? `### Overdue Tasks\n\n**${event.title}**\n- No overdue tasks. All ${openTasks.length} open items are on schedule.`
+        : `### Overdue Tasks\n\nFound **${overdueTasks.length} task${overdueTasks.length !== 1 ? "s" : ""}** needing urgent follow-up for **${event.title}**:\n\n` +
           overdueTasks
             .map(
               (t) =>
-                `• **${t.title}** — ${t.assigneeName || "Unassigned"} | Due: ${t.deadline || t.dueText} | ${t.priority}`
+                `- **${t.title}**\n  Assigned: ${t.assigneeName || "Unassigned"} | Due: ${t.deadline || t.dueText} | Priority: ${t.priority}`
             )
-            .join("\n");
+            .join("\n\n");
   } else if (
     q.includes("pending") || q.includes("open") || q.includes("todo")
   ) {
     answerText =
       openTasks.length === 0
-        ? `✅ All tasks for "${event.title}" are completed!`
-        : `📋 **${openTasks.length} pending task${openTasks.length !== 1 ? "s" : ""} for "${event.title}":**\n\n` +
+        ? `### Pending Tasks\n\n**${event.title}**\n- All tasks are completed.`
+        : `### Pending Tasks\n\nHere are **${openTasks.length} open task${openTasks.length !== 1 ? "s" : ""}** for **${event.title}**:\n\n` +
           openTasks
             .slice(0, 8)
             .map(
               (t) =>
-                `• **${t.title}** — ${t.assigneeName || "Unassigned"} | ${t.priority} | ${t.status || "Todo"}`
+                `- **${t.title}** — ${t.assigneeName || "Unassigned"} (${t.priority})`
             )
             .join("\n");
   } else if (q.includes("unassigned") || q.includes("no owner")) {
     answerText =
       unassignedTasks.length === 0
-        ? `✅ All open tasks for "${event.title}" have assigned owners.`
-        : `📌 **${unassignedTasks.length} unassigned task${unassignedTasks.length !== 1 ? "s" : ""}**:\n\n` +
+        ? `### Unassigned Tasks\n\n**${event.title}**\n- All open tasks have assigned owners.`
+        : `### Unassigned Tasks\n\nFound **${unassignedTasks.length} task${unassignedTasks.length !== 1 ? "s" : ""}** needing an owner for **${event.title}**:\n\n` +
           unassignedTasks
-            .map((t) => `• **${t.title}** — ${t.priority} priority`)
+            .map((t) => `- **${t.title}** (${t.priority} Priority)`)
             .join("\n");
   } else if (q.includes("team") || q.includes("member") || q.includes("people")) {
     answerText =
       teamMembers.length === 0
-        ? `No team members have been added to "${event.title}" yet.`
-        : `👥 **Event team for "${event.title}" (${teamMembers.length} members):**\n\n` +
+        ? `### Event Team\n\nNo team members added to **${event.title}** yet.`
+        : `### Event Team\n\n**${event.title}** (${teamMembers.length} members):\n\n` +
           teamMembers
             .map((m) => {
               const w = context.workloads.get(m.id);
-              return `• **${m.name}** (${m.role})${w ? ` — ${w.activeCount} active tasks (${w.workloadState})` : ""}`;
+              return `- **${m.name}** (${m.role})${w ? ` — ${w.activeCount} active tasks [${w.workloadState}]` : ""}`;
             })
             .join("\n");
   } else if (q.includes("risk") || q.includes("warning") || q.includes("alert")) {
     answerText =
       risks.length === 0
-        ? `✅ No active risks for "${event.title}".`
-        : `⚠️ **${risks.length} active risk${risks.length !== 1 ? "s" : ""}**:\n\n` +
+        ? `### Operational Risks\n\n**${event.title}**\n- No active risks detected.`
+        : `### Operational Risks\n\nFound **${risks.length} active risk${risks.length !== 1 ? "s" : ""}** for **${event.title}**:\n\n` +
           risks
             .slice(0, 5)
-            .map((r) => `• **[${r.severity}] ${r.title}**`)
-            .join("\n");
+            .map((r) => `- **[${r.severity}] ${r.title}**\n  ${r.description}`)
+            .join("\n\n");
   } else {
-    // Default: event progress summary
     const pct =
       tasks.length > 0
         ? Math.round((completedTasks.length / tasks.length) * 100)
         : 0;
     answerText =
-      `📊 **Event Summary — ${event.title}**\n\n` +
-      `• Completion: **${pct}%** (${completedTasks.length}/${tasks.length} tasks done)\n` +
-      `• Open: **${openTasks.length}** | Overdue: **${overdueTasks.length}** | Unassigned: **${unassignedTasks.length}**\n` +
-      `• Team: **${teamMembers.length} members** | Active risks: **${risks.length}**\n\n` +
-      `Ask me things like "What tasks are pending?", "Who has the highest workload?", or "What risks should I know about?"`;
+      `### Event Summary\n\n**${event.title}**\n\n` +
+      `- **Progress:** ${pct}% (${completedTasks.length}/${tasks.length} tasks completed)\n` +
+      `- **Open Tasks:** ${openTasks.length} (${overdueTasks.length} overdue, ${unassignedTasks.length} unassigned)\n` +
+      `- **Team:** ${teamMembers.length} members\n` +
+      `- **Operational Risks:** ${risks.length}\n\n` +
+      `**Suggested actions:**\n` +
+      `- "Show overdue tasks"\n` +
+      `- "Analyze team workload"\n` +
+      `- "Check operational risks"`;
   }
 
   return buildQueryPlan(
     userRequest,
     "GENERAL_EVENT_QUERY",
-    "I answered your question using the current event and team data.",
+    "Analyzed current event state.",
     answerText
   );
 }
@@ -466,7 +582,7 @@ function buildErrorPlan(
   return {
     userRequest,
     intent,
-    reasoningSummary: errorMessage,
+    reasoningSummary: `### Action Needed\n\n${errorMessage}`,
     actions: [],
     requiresApproval: false,
     createdAt: new Date().toISOString(),
@@ -631,8 +747,14 @@ export async function executeApprovedActions(
 ): Promise<AgentPlan> {
   const mutablePlan = {
     ...plan,
-    actions: plan.actions.map((a) => ({ ...a })),
+    actions: plan.actions.map((a) => ({
+      ...a,
+      payload: { ...((a.payload as Record<string, unknown>) || {}) },
+    })),
   };
+
+  let newlyCreatedEventId: string | null = null;
+  const taskTitleToIdMap = new Map<string, string>();
 
   for (const action of mutablePlan.actions) {
     // Only execute approved write actions
@@ -659,13 +781,24 @@ export async function executeApprovedActions(
     try {
       let result;
 
+      // Auto-propagate newly created eventId to subsequent actions in batch
+      if (newlyCreatedEventId) {
+        const curEventId = String(action.payload.eventId || "");
+        if (!curEventId || curEventId === "club-1") {
+          action.payload.eventId = newlyCreatedEventId;
+        }
+      }
+
       switch (action.type) {
         case "CREATE_EVENT":
           result = await tool_create_event(action, options.userId);
+          if (result.success && result.data?.id) {
+            newlyCreatedEventId = result.data.id;
+          }
           break;
 
         case "UPDATE_EVENT_FIELD":
-          result = await tool_update_event(action);
+          result = await tool_update_event(action, options.userId);
           break;
 
         case "CREATE_TASK":
@@ -674,6 +807,12 @@ export async function executeApprovedActions(
             options.existingTasks ?? [],
             options.userId
           );
+          if (result.success && result.data?.id) {
+            const title = String(action.payload.title || result.data.title || "").toLowerCase().trim();
+            if (title) {
+              taskTitleToIdMap.set(title, result.data.id);
+            }
+          }
           break;
 
         case "UPDATE_TASK_STATUS":
@@ -681,13 +820,32 @@ export async function executeApprovedActions(
           result = await tool_update_task(action);
           break;
 
-        case "ASSIGN_TASK":
+        case "ASSIGN_TASK": {
+          const reqTaskId = String(action.payload.taskId || "").toLowerCase().trim();
+          if (taskTitleToIdMap.has(reqTaskId)) {
+            action.payload.taskId = taskTitleToIdMap.get(reqTaskId);
+          }
           result = await tool_assign_task(action);
           break;
+        }
 
-        case "CREATE_TASK_DEPENDENCY":
+        case "CREATE_TASK_DEPENDENCY": {
+          const reqTaskId = String(action.payload.taskId || "").toLowerCase().trim();
+          const reqDependsId = String(
+            action.payload.dependsOnTaskId || (action.payload.dependencyIds as string[])?.[0] || ""
+          ).toLowerCase().trim();
+
+          if (taskTitleToIdMap.has(reqTaskId)) {
+            action.payload.taskId = taskTitleToIdMap.get(reqTaskId);
+          }
+          if (taskTitleToIdMap.has(reqDependsId)) {
+            const realDependsId = taskTitleToIdMap.get(reqDependsId)!;
+            action.payload.dependsOnTaskId = realDependsId;
+            action.payload.dependencyIds = [realDependsId];
+          }
           result = await tool_create_dependency(action);
           break;
+        }
 
         default:
           result = {

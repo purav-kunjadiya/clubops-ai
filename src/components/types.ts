@@ -105,7 +105,17 @@ export type RiskType =
   | "UNASSIGNED_IMPORTANT_TASK"
   | "APPROACHING_DEADLINE"
   | "BLOCKED_DEPENDENCY"
-  | "OVERLOADED_MEMBER";
+  | "OVERLOADED_MEMBER"
+  | "SINGLE_POINT_OF_FAILURE"
+  | "DEADLINE_COLLISION"
+  | "DEPENDENCY_CHAIN_RISK"
+  | "ROLE_COVERAGE_GAP"
+  | "LAST_MINUTE_TASK_RISK"
+  | "UNOWNED_CRITICAL_AREA"
+  | "TEAM_OVERDEPENDENCY"
+  | "READINESS_RISK"
+  | "NO_BACKUP_OWNER"
+  | "CASCADE_IMPACT";
 
 export type RiskSeverity = "Low" | "Medium" | "High" | "Critical";
 
@@ -120,6 +130,9 @@ export interface DerivedRisk {
   severity: RiskSeverity;
   evidence: string;
   status: RiskStatus;
+  affectedTarget?: string;
+  suggestedMitigation?: string;
+  mitigationPrompt?: string;
 }
 
 export interface RiskAlert {
