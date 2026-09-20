@@ -22,7 +22,7 @@ interface MessageItem {
   time: string;
   isError?: boolean;
   plan?: AgentPlan;
-  executionStatus?: "proposed" | "approved" | "executing" | "completed" | "failed";
+  executionStatus?: "pending_approval" | "proposed" | "approved" | "rejected" | "executing" | "completed" | "failed";
   executionResultText?: string;
   functionCalls?: Record<string, unknown>[];
   modelParts?: unknown[];
@@ -39,6 +39,7 @@ interface EventraDrawerProps {
   teamMembers: EventTeamMember[];
   eventTasks: TaskItem[];
   onTasksUpdated: () => void;
+  onEventsUpdated?: () => void;
   initialPrompt?: string;
 }
 
@@ -86,10 +87,12 @@ export function EventraDrawer({
   isOpen,
   onClose,
   event,
+  club,
   currentUserId,
   teamMembers,
   eventTasks,
   onTasksUpdated,
+  onEventsUpdated,
   initialPrompt,
 }: EventraDrawerProps) {
   const [input, setInput] = useState("");
@@ -195,9 +198,15 @@ export function EventraDrawer({
           prompt: promptText,
           history: conversationHistory,
           context: {
+            club: club
+              ? { id: (club as { id: string; name?: string }).id, name: (club as { id: string; name?: string }).name }
+              : event?.clubId
+              ? { id: event.clubId }
+              : null,
             event: event
               ? {
                   id: event.id,
+                  clubId: event.clubId,
                   title: event.title,
                   category: event.category,
                   date: event.date,
@@ -262,7 +271,7 @@ export function EventraDrawer({
           text: responseText,
           time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           plan: activePlan,
-          executionStatus: hasPlan ? "proposed" : undefined,
+          executionStatus: hasPlan ? "pending_approval" : undefined,
           functionCalls: data.functionCalls,
           modelParts: data.modelParts,
           promptText,
@@ -309,22 +318,68 @@ export function EventraDrawer({
         actions: plan.actions.map((a) => ({ ...a, status: "approved" as const })),
       };
 
+      const resolvedClubId = (club as { id?: string })?.id || event?.clubId;
+
       const resultPlan = await executeApprovedActions(approvedPlan, {
         userId: currentUserId,
+        clubId: resolvedClubId,
         existingTasks: eventTasks,
       });
 
+      // Strict verification: check if any action failed in Supabase
+      const failedAction = resultPlan.actions.find((a) => a.status === "failed");
+      if (failedAction) {
+        const errorDetail =
+          (failedAction.result as { error?: string })?.error ||
+          failedAction.result?.error ||
+          "Failed to execute action in Supabase.";
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === msgId
+              ? {
+                  ...m,
+                  executionStatus: "failed",
+                  executionResultText: `Failed: ${errorDetail}`,
+                }
+              : m
+          )
+        );
+        return;
+      }
+
       onTasksUpdated();
+      const hasEventAction = approvedPlan.actions.some((a) => a.type === "CREATE_EVENT");
+      if (hasEventAction && onEventsUpdated) {
+        onEventsUpdated();
+      }
 
       // Trigger Turn 2: Send tool results back to Gemini for final response synthesis
-      const executedResults = resultPlan.actions.map((act) => ({
-        name: act.type.toLowerCase(),
-        result: {
-          actionId: act.id,
-          status: act.status,
-          description: act.description,
-        },
-      }));
+      const executedResults = resultPlan.actions.map((act, idx) => {
+        const matchingFc = targetMsg?.functionCalls?.[idx];
+        const toolName =
+          (matchingFc?.name as string) ||
+          (act.type === "CREATE_EVENT"
+            ? "tool_create_event"
+            : act.type === "CREATE_TASK"
+            ? "tool_create_task"
+            : act.type === "ASSIGN_TASK"
+            ? "tool_assign_task"
+            : act.type === "CREATE_TASK_DEPENDENCY"
+            ? "tool_create_dependency"
+            : act.type.toLowerCase());
+
+        return {
+          name: toolName,
+          result: {
+            actionId: act.id,
+            status: act.status,
+            description: act.description,
+            data: (act as { result?: { data?: unknown } }).result?.data,
+            error: (act as { result?: { error?: string } }).result?.error,
+          },
+        };
+      });
 
       const res = await fetch("/api/asky/chat", {
         method: "POST",
@@ -332,7 +387,18 @@ export function EventraDrawer({
         body: JSON.stringify({
           prompt: targetMsg?.promptText || "Action executed",
           context: {
-            event,
+            club: club
+              ? { id: (club as { id: string; name?: string }).id, name: (club as { id: string; name?: string }).name }
+              : event?.clubId
+              ? { id: event.clubId }
+              : null,
+            event: event
+              ? {
+                  id: event.id,
+                  clubId: event.clubId,
+                  title: event.title,
+                }
+              : null,
             tasks: eventTasks,
             teamMembers,
           },
@@ -345,6 +411,7 @@ export function EventraDrawer({
       const data = await res.json();
       const finalAnswer = data.answer || "Actions executed successfully!";
 
+      // Only mark completed when execution genuinely succeeded
       setMessages((prev) =>
         prev.map((m) =>
           m.id === msgId
@@ -374,7 +441,20 @@ export function EventraDrawer({
 
   const handleRejectPlan = (msgId: string) => {
     setMessages((prev) =>
-      prev.map((m) => (m.id === msgId ? { ...m, executionStatus: "failed" } : m))
+      prev.map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              executionStatus: "rejected",
+              plan: m.plan
+                ? {
+                    ...m.plan,
+                    actions: m.plan.actions.map((a) => ({ ...a, status: "rejected" as const })),
+                  }
+                : undefined,
+            }
+          : m
+      )
     );
   };
 

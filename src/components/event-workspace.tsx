@@ -73,6 +73,7 @@ interface EventWorkspaceProps {
   onAddTask: (task: TaskItem) => void;
   onUpdateTaskStatus: (taskId: string, status: TaskStatus) => void;
   onToggleTaskDone: (taskId: string) => void;
+  onEventsUpdated?: () => void;
 }
 
 export function EventWorkspace({
@@ -85,6 +86,7 @@ export function EventWorkspace({
   onAddTask,
   onUpdateTaskStatus,
   onToggleTaskDone,
+  onEventsUpdated,
 }: EventWorkspaceProps) {
   const [activeSection, setActiveSection] = useState<EventSectionType>("overview");
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
@@ -3195,6 +3197,7 @@ export function EventWorkspace({
         teamMembers={teamMembers}
         eventTasks={eventTasks}
         onTasksUpdated={handleRetryLoadTasks}
+        onEventsUpdated={onEventsUpdated}
         initialPrompt={eventraInitialPrompt}
       />
     </div>

@@ -122,6 +122,35 @@ export async function fetchEventTasks(
 }
 
 /**
+ * Fetch all tasks for an entire club from Supabase.
+ */
+export async function fetchClubTasks(
+  clubId: string
+): Promise<{ tasks: TaskItem[]; error: string | null }> {
+  if (!clubId) {
+    return { tasks: [], error: "Club ID is required." };
+  }
+
+  if (!isSupabaseConfigured) {
+    return { tasks: [], error: null };
+  }
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("club_id", clubId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching club tasks from Supabase:", error);
+    return { tasks: [], error: error.message };
+  }
+
+  const tasks: TaskItem[] = ((data as unknown as TaskRow[]) || []).map(mapRowToTaskItem);
+  return { tasks, error: null };
+}
+
+/**
  * Detects if adding a dependency edge (taskId -> newDepId) would introduce a cycle.
  * In a dependency graph, an edge (A -> B) means A depends on B.
  * A cycle would be created if B can already reach A through existing dependency edges.
@@ -533,25 +562,59 @@ export async function updateEventTaskAssigneeInSupabase(
   }
 
   // If assigning a member, validate that member belongs to the event's team
-  if (assignee.memberId && isSupabaseConfigured) {
-    const { data: teamEntry, error: teamCheckError } = await supabase
-      .from("event_team_members")
-      .select("id")
-      .eq("event_id", eventId)
-      .eq("club_member_id", assignee.memberId)
-      .maybeSingle();
+  let resolvedMemberId = assignee.memberId;
+  if (isSupabaseConfigured && eventId && eventId !== "club-general" && assignee.name && assignee.name !== "Unassigned") {
+    if (resolvedMemberId) {
+      const { data: teamEntry, error: teamCheckError } = await supabase
+        .from("event_team_members")
+        .select("id")
+        .eq("event_id", eventId)
+        .eq("club_member_id", resolvedMemberId)
+        .maybeSingle();
 
-    if (teamCheckError || !teamEntry) {
-      return {
-        success: false,
-        error: "The selected assignee must be a member of this event's team.",
-      };
+      if (teamCheckError || !teamEntry) {
+        return {
+          success: false,
+          error: "The selected assignee must be a member of this event's team.",
+        };
+      }
+    } else {
+      // Find event team members to match by name
+      const { data: teamRows } = await supabase
+        .from("event_team_members")
+        .select("club_member_id")
+        .eq("event_id", eventId);
+
+      if (!teamRows || teamRows.length === 0) {
+        return {
+          success: false,
+          error: "The selected assignee must be a member of this event's team.",
+        };
+      }
+
+      const teamClubMemberIds = teamRows.map((r) => r.club_member_id);
+      const { data: memberRows } = await supabase
+        .from("club_members")
+        .select("id, name")
+        .in("id", teamClubMemberIds);
+
+      const matched = memberRows?.find(
+        (m) => m.name.trim().toLowerCase() === assignee.name?.trim().toLowerCase()
+      );
+
+      if (!matched) {
+        return {
+          success: false,
+          error: `The selected assignee "${assignee.name}" must be a member of this event's team.`,
+        };
+      }
+      resolvedMemberId = String(matched.id);
     }
   }
 
   const newName = assignee.name || "Unassigned";
   const newRole = assignee.role || "Unassigned";
-  const newMemberId = assignee.memberId || undefined;
+  const newMemberId = resolvedMemberId || undefined;
 
   if (!isSupabaseConfigured) {
     updateDemoTask(taskId, {
@@ -567,7 +630,7 @@ export async function updateEventTaskAssigneeInSupabase(
     .update({
       assignee_name: newName,
       assignee_role: newRole,
-      assignee_member_id: assignee.memberId || null,
+      assignee_member_id: resolvedMemberId || null,
     })
     .eq("id", taskId);
 

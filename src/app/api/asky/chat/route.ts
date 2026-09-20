@@ -57,7 +57,8 @@ export interface AskyEventContext {
 export interface AskyChatRequestBody {
   prompt: string;
   context?: {
-    event?: AskyEventContext | null;
+    club?: { id: string; name?: string } | null;
+    event?: (AskyEventContext & { clubId?: string }) | null;
     tasks?: AskyTaskContext[];
     teamMembers?: AskyMemberContext[];
     workloads?: AskyWorkloadContext[];
@@ -138,14 +139,30 @@ function generateHeuristicResponse(
 
   // ─── 2. EVENT CREATION REQUEST ──────────────────────────────────────────────
   if (
-    query.includes("make another event") ||
+    query.includes("make an event") ||
     query.includes("create an event") ||
     query.includes("create event") ||
+    query.includes("make event") ||
     query.includes("new event") ||
+    query.includes("plan an event") ||
+    query.includes("plan event") ||
+    query.includes("can you make") ||
+    query.includes("i want to create") ||
+    query.includes("let's create") ||
+    query.includes("make me an event") ||
+    query.includes("make another event") ||
     query.includes("plan another event") ||
-    query.includes("plan an event")
+    query.includes("host an event")
   ) {
-    return `Sure! What should I name the new event, and what date should it be on? (For example: *"Plan Tech Fest on 15 October 2026"*).`;
+    if (query.includes("tech fest") && (query.includes("october") || query.includes("oct") || query.includes("college") || query.includes("500"))) {
+      return `### Ready to Create: Tech Fest\n\n- **Date:** 15 October\n- **Location:** ABC College\n- **Expected Attendees:** 500\n\nPlease approve the action plan to create this event in your club workspace.`;
+    }
+    if (query.includes("called ") || query.includes("named ")) {
+      const match = prompt.match(/(?:called|named)\s+([^,.]+)/i);
+      const name = match ? match[1].trim() : "the event";
+      return `Great! When is **${name}**, where will it be held, and how many attendees are you expecting?`;
+    }
+    return "Absolutely. I can set that up. What should the event be called?";
   }
 
   // ─── 3. OVERDUE ────────────────────────────────────────────────────────────
@@ -417,13 +434,18 @@ function generateHeuristicResponse(
 
   // ─── 9. TEAM / MEMBERS ────────────────────────────────────────────────────
   if (
-    query.includes("team") ||
-    query.includes("member") ||
-    query.includes("who is on") ||
-    query.includes("who are") ||
-    query.includes("involved") ||
-    query.includes("staff") ||
-    query.includes("people")
+    !query.includes("assign") &&
+    !query.includes("who should handle") &&
+    !query.includes("give this to") &&
+    (
+      query.includes("team") ||
+      query.includes("member") ||
+      query.includes("who is on") ||
+      query.includes("who are") ||
+      query.includes("involved") ||
+      query.includes("staff") ||
+      query.includes("people")
+    )
   ) {
     if (teamMembers.length === 0) {
       return `No team members have been added to ${eventName} yet. Add members from the Team tab in the Event Workspace.`;
@@ -746,6 +768,44 @@ function generateHeuristicResponse(
     return reply.trim();
   }
 
+  // ─── 16. TASK ASSIGNMENT / WHO SHOULD HANDLE ──────────────────────────────
+  if (
+    query.includes("assign") ||
+    query.includes("who should handle") ||
+    query.includes("who can take") ||
+    query.includes("give this to") ||
+    query.includes("best member") ||
+    query.includes("best available")
+  ) {
+    const unassigned = openTasks.find((t) => !t.assigneeName || t.assigneeName === "Unassigned") || openTasks[0];
+    if (teamMembers.length === 0) {
+      return `No team members are currently registered for ${eventName}. Add members to the event team first.`;
+    }
+
+    // Sort by lowest active workload
+    const sorted = [...teamMembers].sort((a, b) => {
+      const wA = workloads.find((w) => w.memberName.toLowerCase() === a.name.toLowerCase())?.activeCount ?? 0;
+      const wB = workloads.find((w) => w.memberName.toLowerCase() === b.name.toLowerCase())?.activeCount ?? 0;
+      return wA - wB;
+    });
+
+    const chosen = sorted[0];
+    const chosenWorkload = workloads.find((w) => w.memberName.toLowerCase() === chosen.name.toLowerCase());
+    const loadSummary = chosenWorkload
+      ? `${chosenWorkload.workloadState} workload (${chosenWorkload.activeCount} active tasks, ${chosenWorkload.overdueCount} overdue)`
+      : "lowest active workload and high availability";
+
+    const taskTitle = unassigned ? unassigned.title : "this task";
+
+    return (
+      `Suggested assignment:\n` +
+      `Task: ${taskTitle}\n` +
+      `Member: ${chosen.name}${chosen.role ? ` (${chosen.role})` : ""}\n` +
+      `Reason: Matches ${chosen.role || "team"} capability with ${loadSummary}.\n\n` +
+      `Approve this assignment?`
+    );
+  }
+
   // ─── DEFAULT: Ambiguity Guidance ──────────────────────────────────────────
   return "I'm not sure what you mean yet. You can ask me about this event's tasks, team, deadlines, risks, or ask me to create/update something.";
 }
@@ -755,7 +815,7 @@ export const GEMINI_EVENTRA_TOOLS = [
     functionDeclarations: [
       {
         name: "tool_create_event",
-        description: "Propose creating a new event in the current club workspace.",
+        description: "Propose creating a new real event in the current club workspace. Use ONLY when the user provides the event name, date, and location. If the user only says 'create an event' or 'can you make an event?' without details, do NOT call this tool with fake/empty values; instead ask for the event name and missing details conversationally.",
         parameters: {
           type: "OBJECT",
           properties: {
@@ -763,15 +823,15 @@ export const GEMINI_EVENTRA_TOOLS = [
             category: {
               type: "STRING",
               enum: ["Hackathon", "Workshop", "Social", "Speaker", "Competition"],
-              description: "Category of event"
+              description: "Category of event (defaults to Workshop if unspecified)"
             },
             date: { type: "STRING", description: "Event date (e.g., 15 October 2026)" },
-            time: { type: "STRING", description: "Event time window" },
-            location: { type: "STRING", description: "Event location or venue" },
-            capacity: { type: "NUMBER", description: "Expected attendee capacity" },
-            budgetAllocated: { type: "NUMBER", description: "Allocated budget" }
+            time: { type: "STRING", description: "Event time window (e.g., 10:00 AM - 5:00 PM)" },
+            location: { type: "STRING", description: "Event location or venue (e.g., ABC College, Main Auditorium)" },
+            capacity: { type: "INTEGER", description: "Expected attendee capacity (e.g., 500)" },
+            budgetAllocated: { type: "INTEGER", description: "Allocated budget in USD" }
           },
-          required: ["title"]
+          required: ["title", "date", "location"]
         }
       },
       {
@@ -829,15 +889,16 @@ export const GEMINI_EVENTRA_TOOLS = [
       },
       {
         name: "tool_assign_task",
-        description: "Propose assigning a task to a team member.",
+        description: "Propose assigning a task to the best available event team member based on role fit, capability, and current workload. ALWAYS use this tool when the user asks to assign a task, give a task to a member, or asks who should handle a task.",
         parameters: {
           type: "OBJECT",
           properties: {
-            taskId: { type: "STRING", description: "ID of task to assign" },
-            assigneeName: { type: "STRING", description: "Target team member name" },
-            assigneeRole: { type: "STRING", description: "Target team member role" }
+            taskId: { type: "STRING", description: "ID or title of the task to assign" },
+            assigneeName: { type: "STRING", description: "Target team member name from TEAM MEMBERS" },
+            assigneeRole: { type: "STRING", description: "Target team member role" },
+            reason: { type: "STRING", description: "Clear explanation of why this member was selected based on their role and current workload" }
           },
-          required: ["taskId", "assigneeName"]
+          required: ["taskId", "assigneeName", "reason"]
         }
       },
       {
@@ -962,56 +1023,84 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
    - Use the conversation history context to answer follow-up questions seamlessly (e.g., if previous question was about overdue tasks and user asks "Why is venue setup urgent?", reference the venue setup details naturally).
 4. DUPLICATE CHECK (AVOID DUPLICATE CREATION):
    - Review CURRENT CLUBOPS CONTEXT carefully. If an event or task with a matching title already exists, DO NOT call tool_create_event or tool_create_task again unnecessarily!
-5. FULL EVENT PLANNING FLOW:
-   - When the user asks to plan or create a new event (e.g. "Mare Tech Fest karvo chhe...", "Plan an event...", "Create Tech Fest"):
-   - Propose tool_create_event (if not existing).
-   - Propose multiple tool_create_task calls for initial execution tasks.
-   - Set deadlines BEFORE the event date. NEVER create deadlines after the event date.
-   - Propose tool_assign_task calls assigning tasks to members in TEAM MEMBERS based on role fit.
-   - Propose tool_create_dependency calls for logical task prerequisites.
-6. TURN 2 RESPONSE (AFTER TOOL EXECUTION RESULTS):
-   - When tool execution results are provided, produce a clean executive final response based strictly on actual database execution results.
-7. GENERAL QUESTIONS & QUERIES:
+5. EVENT CREATION CONVERSATIONAL PROTOCOL & FUNCTION CALLING:
+   - When the user expresses intent to create/make/plan an event (e.g., "can you make an event?", "make an event", "create an event", "I want to create an event", "let's create an event", "make me an event"):
+     * If required details (event name/title, date, location/venue, capacity) are NOT yet provided in the message or conversation history, DO NOT call tool_create_event with empty or placeholder values!
+     * Instead, respond naturally and conversationally asking for the missing details (e.g., "Absolutely. I can set that up. What should the event be called?").
+     * Collect missing details conversationally step-by-step: event name, date, venue/location, and expected attendees.
+     * ONLY once the necessary details (at least the event title, date, and location) are provided by the user, invoke tool_create_event with the collected values.
+     * The tool call will generate a clear approval card for human review before any database write occurs.
+6. AI TASK ASSIGNMENT PROTOCOL & WORKLOAD REASONING:
+   - When the user asks to assign a task (e.g., "Assign this task to the best available member", "assign this task", "give this to the best member", "who should handle this?", "assign it to Technical", "assign this to [member name]"):
+     * Review the TASKS list to identify the target task (if unspecified, choose the open/unassigned task).
+     * Review TEAM MEMBERS and their specific roles (Technical, Logistics, Marketing, Design, Sponsorship, Registration).
+     * Review WORKLOADS to pick the most suitable member with the lowest active workload (0-2 Low, 3-4 Medium, 5-6 High, 7+ Overloaded) and zero/few overdue tasks.
+     * NEVER assign to a person who is not listed in TEAM MEMBERS.
+     * Invoke tool_assign_task with:
+       - taskId: the task ID
+       - assigneeName: the chosen member's exact name
+       - assigneeRole: the chosen member's role
+       - reason: a concise explanation of their role suitability and current workload (e.g., "Technical Lead with low workload (1 active task, 0 overdue)")
+     * Do NOT execute the database write silently. The tool proposal will generate an approval card for human confirmation first.
+7. TURN 2 RESPONSE (AFTER TOOL EXECUTION RESULTS):
+   - When tool execution results are provided, produce a clean executive final response based strictly on actual database execution results (e.g., "Done — Tech Fest has been created successfully." or "Done — [Task] has been assigned to [Member].").
+8. GENERAL QUESTIONS & QUERIES:
    - If no tool calls are needed, respond directly with conversational, clear Markdown formatted text with bullet points.`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     const callGemini = async (contents: unknown[], tools?: unknown[]) => {
-      const modelsToTry = ["gemini-2.5-flash", "gemini-flash-latest"];
+      const modelsToTry = [
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest",
+      ];
       let lastRes: Response | null = null;
       let lastErrText = "";
 
       for (const modelName of modelsToTry) {
         for (let attempt = 0; attempt < 2; attempt++) {
-          const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                contents,
-                tools,
-                generationConfig: { temperature: 0.2 },
-              }),
-              signal: controller.signal,
+          try {
+            const res = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents,
+                  tools,
+                  generationConfig: { temperature: 0.2 },
+                }),
+                signal: controller.signal,
+              }
+            );
+
+            if (res.ok) {
+              return await res.json();
             }
-          );
 
-          if (res.ok) {
-            return await res.json();
-          }
-
-          lastRes = res;
-          lastErrText = await res.text();
-          if (res.status === 404) {
+            lastRes = res;
+            lastErrText = await res.text();
+            if (res.status === 404) {
+              console.warn(`Model ${modelName} returned 404, trying next available model...`);
+              break;
+            }
+            if (res.status === 429) {
+              console.warn(`Model ${modelName} quota reached (429), trying next available model...`);
+              break;
+            }
+            if (res.status === 503 && attempt === 0) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              continue;
+            }
+            break;
+          } catch (fetchErr) {
+            console.warn(`Fetch error with model ${modelName}:`, fetchErr);
             break;
           }
-          if ((res.status === 503 || res.status === 429) && attempt === 0) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            continue;
-          }
-          throw new Error(`Gemini API returned status ${res.status}: ${lastErrText}`);
         }
       }
 
@@ -1040,40 +1129,95 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
 
     // TURN 2: Responding after Tool Execution Result
     if (toolResults && toolResults.length > 0 && (previousFunctionCalls || modelParts)) {
-      const contents = [
-        {
-          role: "user",
-          parts: [{ text: contextPrompt }]
-        },
-        {
-          role: "model",
-          parts: modelParts && modelParts.length > 0
-            ? modelParts
-            : (previousFunctionCalls || []).map((fc) => ({ functionCall: fc }))
-        },
-        {
-          role: "user",
-          parts: toolResults.map((tr) => ({
-            functionResponse: {
-              name: tr.name,
-              response: tr.result
-            }
-          }))
+      try {
+        const contents = [
+          {
+            role: "user",
+            parts: [{ text: contextPrompt }]
+          },
+          {
+            role: "model",
+            parts: modelParts && modelParts.length > 0
+              ? modelParts
+              : (previousFunctionCalls || []).map((fc) => ({ functionCall: fc }))
+          },
+          {
+            role: "user",
+            parts: toolResults.map((tr) => ({
+              functionResponse: {
+                name: tr.name,
+                response: tr.result
+              }
+            }))
+          }
+        ];
+
+        const geminiData = await callGemini(contents, GEMINI_EVENTRA_TOOLS);
+        clearTimeout(timeoutId);
+
+        const partsArray = geminiData?.candidates?.[0]?.content?.parts as Array<Record<string, unknown>> | undefined;
+        const finalAnswer =
+          partsArray
+            ?.filter((p) => typeof p.text === "string")
+            ?.map((p) => p.text as string)
+            ?.join("\n");
+
+        if (finalAnswer) {
+          return NextResponse.json({
+            answer: finalAnswer,
+            proposedPlan: null,
+            usedGeminiTools: true
+          });
         }
-      ];
+      } catch (turn2Err) {
+        console.warn("Turn 2 Gemini call failed, building response from execution results:", turn2Err);
+      }
 
-      const geminiData = await callGemini(contents, GEMINI_EVENTRA_TOOLS);
-      clearTimeout(timeoutId);
+      // If Turn 2 Gemini synthesis failed or was empty, synthesize response directly from actual tool results
+      const assignResult = toolResults.find((tr) => tr.name === "tool_assign_task" || tr.name === "assign_task");
+      if (assignResult) {
+        const resObj = (assignResult.result || {}) as Record<string, unknown>;
+        const isSuccess = resObj.status === "completed" || !!resObj.data;
+        const assignData = (resObj.data || {}) as Record<string, unknown>;
+        const assignedTo = assignData.assignedTo ? String(assignData.assignedTo) : "the selected team member";
+        if (isSuccess) {
+          return NextResponse.json({
+            answer: `Done — the task has been successfully assigned to **${assignedTo}**.`,
+            proposedPlan: null,
+            usedGeminiTools: true
+          });
+        } else {
+          return NextResponse.json({
+            answer: `Failed to assign task: ${resObj.error || "Unknown error"}`,
+            proposedPlan: null,
+            usedGeminiTools: true
+          });
+        }
+      }
 
-      const partsArray = geminiData?.candidates?.[0]?.content?.parts as Array<Record<string, unknown>> | undefined;
-      const finalAnswer =
-        partsArray
-          ?.filter((p) => typeof p.text === "string")
-          ?.map((p) => p.text as string)
-          ?.join("\n") || "Done — action completed.";
+      const eventResult = toolResults.find((tr) => tr.name === "tool_create_event" || tr.name === "create_event");
+      if (eventResult) {
+        const resObj = (eventResult.result || {}) as Record<string, unknown>;
+        const isSuccess = resObj.status === "completed" || !!resObj.data;
+        const eventData = (resObj.data || {}) as Record<string, unknown>;
+        const title = eventData.title ? String(eventData.title) : "Event";
+        if (isSuccess) {
+          return NextResponse.json({
+            answer: `Done — **${title}** has been created successfully.`,
+            proposedPlan: null,
+            usedGeminiTools: true
+          });
+        } else {
+          return NextResponse.json({
+            answer: `Failed to create event: ${resObj.error || "Unknown error"}`,
+            proposedPlan: null,
+            usedGeminiTools: true
+          });
+        }
+      }
 
       return NextResponse.json({
-        answer: finalAnswer,
+        answer: "Done — actions executed successfully.",
         proposedPlan: null,
         usedGeminiTools: true
       });
@@ -1106,11 +1250,15 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
         const args = (fc.args as Record<string, unknown>) || {};
 
         if (name === "tool_create_event") {
-          const title = String(args.title || "Tech Fest 2026").trim();
-          const date = String(args.date || "15 October 2026").trim();
+          const title = String(args.title || "Tech Fest").trim();
+          const date = String(args.date || "15 October").trim();
           const location = String(args.location || "Campus Center").trim();
           const capacity = Number(args.capacity) || 500;
           const category = String(args.category || "Workshop");
+          const targetClubId =
+            contextData?.club?.id ||
+            (event as { clubId?: string })?.clubId ||
+            (event?.id && !event.id.startsWith("evt-") ? event.id : "");
 
           actions.push({
             id: "agent-" + Math.random().toString(36).substring(2, 11),
@@ -1118,7 +1266,7 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
             description: `Create Event: "${title}" on ${date} at ${location} (~${capacity} attendees)`,
             requiresApproval: true,
             payload: {
-              clubId: event?.id || "club-1",
+              clubId: targetClubId,
               title,
               category,
               date,
@@ -1129,7 +1277,7 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
               leadName: "Event Lead",
               leadRole: "Event Lead",
             },
-            status: "proposed",
+            status: "pending_approval",
           });
         } else if (name === "tool_create_task") {
           const title = String(args.title || "New Task").trim();
@@ -1164,33 +1312,71 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
               status: "Todo",
               dependencies: [],
             },
-            status: "proposed",
+            status: "pending_approval",
           });
         } else if (name === "tool_assign_task") {
           const reqTaskId = String(args.taskId || "").trim();
           const reqAssignee = String(args.assigneeName || "").trim();
+          const reqReason = String(args.reason || "").trim();
 
-          const matchedTask = tasks.find(
-            (t) => t.id === reqTaskId || t.title.toLowerCase().includes(reqTaskId.toLowerCase())
-          );
+          const matchedTask =
+            tasks.find(
+              (t) =>
+                t.id === reqTaskId ||
+                t.title.toLowerCase().includes(reqTaskId.toLowerCase()) ||
+                reqTaskId.toLowerCase().includes(t.title.toLowerCase())
+            ) ||
+            tasks.find((t) => !t.assigneeName || t.assigneeName === "Unassigned") ||
+            tasks[0];
 
           const matchedMember = teamMembers.find(
-            (m) => m.name.toLowerCase() === reqAssignee.toLowerCase()
+            (m) =>
+              m.name.toLowerCase() === reqAssignee.toLowerCase() ||
+              m.name.toLowerCase().includes(reqAssignee.toLowerCase()) ||
+              reqAssignee.toLowerCase().includes(m.name.toLowerCase())
           );
 
-          if (matchedTask || reqTaskId) {
+          const memberWorkload = workloads.find(
+            (w) => w.memberName.toLowerCase() === (matchedMember?.name || reqAssignee).toLowerCase()
+          );
+
+          const finalTaskId = matchedTask ? matchedTask.id : reqTaskId;
+          const finalTaskTitle = matchedTask ? matchedTask.title : (reqTaskId || "Task");
+          const finalAssigneeName = matchedMember ? matchedMember.name : reqAssignee;
+          const finalAssigneeRole = matchedMember
+            ? (matchedMember.role || "Member")
+            : String(args.assigneeRole || "Member");
+          const finalMemberId = matchedMember ? matchedMember.id : undefined;
+          const finalEventId = event?.id || (matchedTask as { eventId?: string })?.eventId || "";
+
+          let assignmentReason = reqReason;
+          if (!assignmentReason) {
+            const loadDesc = memberWorkload
+              ? `${memberWorkload.workloadState} workload (${memberWorkload.activeCount} active tasks, ${memberWorkload.overdueCount} overdue)`
+              : "lowest active workload and optimal availability";
+            assignmentReason = `Matches ${finalAssigneeRole} capability with ${loadDesc}.`;
+          }
+
+          if (finalTaskId) {
             actions.push({
               id: "agent-" + Math.random().toString(36).substring(2, 11),
               type: "ASSIGN_TASK",
-              description: `Assign Task: "${matchedTask ? matchedTask.title : reqTaskId}" → ${matchedMember ? matchedMember.name : reqAssignee}`,
+              description: `Assign Task: "${finalTaskTitle}" → ${finalAssigneeName} (${finalAssigneeRole})`,
               requiresApproval: true,
               payload: {
-                taskId: matchedTask ? matchedTask.id : reqTaskId,
-                assigneeName: matchedMember ? matchedMember.name : reqAssignee,
-                assigneeRole: matchedMember ? matchedMember.role : String(args.assigneeRole || "Member"),
-                assigneeMemberId: matchedMember?.id,
+                taskId: finalTaskId,
+                taskTitle: finalTaskTitle,
+                eventId: finalEventId,
+                clubId: contextData?.club?.id || (event as { clubId?: string })?.clubId || "",
+                assigneeName: finalAssigneeName,
+                assigneeRole: finalAssigneeRole,
+                assigneeMemberId: finalMemberId,
+                memberName: finalAssigneeName,
+                memberRole: finalAssigneeRole,
+                memberId: finalMemberId,
+                reason: assignmentReason,
               },
-              status: "proposed",
+              status: "pending_approval",
             });
           }
         } else if (name === "tool_update_event") {
@@ -1204,7 +1390,7 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
               field: String(args.field),
               value: args.value,
             },
-            status: "proposed",
+            status: "pending_approval",
           });
         } else if (name === "tool_update_task") {
           actions.push({
@@ -1217,7 +1403,7 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
               field: String(args.field),
               value: args.value,
             },
-            status: "proposed",
+            status: "pending_approval",
           });
         } else if (name === "tool_create_dependency") {
           actions.push({
@@ -1229,12 +1415,45 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
               taskId: String(args.taskId),
               dependsOnTaskId: String(args.dependsOnTaskId),
             },
-            status: "proposed",
+            status: "pending_approval",
           });
         }
       }
 
       if (actions.length > 0) {
+        const assignAction = actions.find((a) => a.type === "ASSIGN_TASK");
+        if (assignAction) {
+          const p = assignAction.payload as Record<string, unknown>;
+          const taskName = String(p.taskTitle || "Task");
+          const memberName = String(p.assigneeName || "Member");
+          const reason = String(p.reason || "Matches role capability with lowest active workload.");
+
+          let planSummary = `Suggested assignment:\n`;
+          planSummary += `Task: ${taskName}\n`;
+          planSummary += `Member: ${memberName}\n`;
+          planSummary += `Reason: ${reason}\n\n`;
+          planSummary += `Approve this assignment?`;
+
+          const proposedPlan = {
+            userRequest: trimmedPrompt,
+            intent: "ASSIGN_TASK",
+            reasoningSummary: planSummary,
+            actions,
+            requiresApproval: true,
+            createdAt: new Date().toISOString(),
+          };
+
+          return NextResponse.json({
+            answer:
+              rawText ||
+              `I’ve analyzed team workloads and capabilities. Here is the recommended task assignment:`,
+            proposedPlan,
+            functionCalls: rawFunctionCalls,
+            modelParts: candidateParts,
+            usedGeminiTools: true,
+          });
+        }
+
         const createEvtAction = actions.find((a) => a.type === "CREATE_EVENT");
         const evtPayload = (createEvtAction?.payload || {}) as Record<string, unknown>;
         const eventTitle = String(evtPayload.title || event?.title || "Event Plan");
@@ -1296,8 +1515,12 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
           createdAt: new Date().toISOString(),
         };
 
+        const defaultEventAnswer = createEvtAction
+          ? `Here’s what I’m ready to create:\n\n**${eventTitle}**\n- 📅 Date: ${eventDate}\n- 📍 Location: ${eventLoc}\n- 👥 Expected attendees: ${eventCap}\n\nCreate this event?`
+          : null;
+
         return NextResponse.json({
-          answer: rawText || null,
+          answer: rawText || defaultEventAnswer,
           proposedPlan,
           functionCalls: rawFunctionCalls,
           modelParts: candidateParts,

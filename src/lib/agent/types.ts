@@ -28,6 +28,7 @@ export type AgentIntent =
   | "CREATE_TASKS"
   /** User wants to (re)assign tasks to team members. */
   | "ASSIGN_TASKS"
+  | "ASSIGN_TASK"
   /** User wants to define task prerequisite chains. */
   | "CREATE_DEPENDENCIES"
   /** User wants a workload analysis for the event team. */
@@ -84,6 +85,7 @@ export type AgentActionType =
  *  failed     — Tool operation failed (error details in `result.error`)
  */
 export type AgentActionStatus =
+  | "pending_approval"
   | "proposed"
   | "approved"
   | "rejected"

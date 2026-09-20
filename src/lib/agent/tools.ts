@@ -48,6 +48,8 @@ import {
   type CreateTaskParams,
 } from "@/lib/tasks";
 
+import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+
 // Agent types
 import type { AgentAction, AgentToolResult } from "./types";
 
@@ -58,7 +60,7 @@ import type { AgentAction, AgentToolResult } from "./types";
  * Returns a standard error result if the action is not approved.
  */
 function requireApproval<T = unknown>(action: AgentAction): AgentToolResult<T> | null {
-  if (action.status !== "approved") {
+  if (action.status !== "approved" && action.status !== "executing") {
     return {
       success: false,
       error: `Action "${action.id}" (${action.type}) cannot be executed: status is "${action.status}", expected "approved". The user must approve this action before it can run.`,
@@ -170,7 +172,22 @@ export async function tool_create_event(
   const blocked = requireApproval(action);
   if (blocked) return blocked as AgentToolResult<ClubEvent>;
 
-  const p = action.payload as Partial<CreateEventParams>;
+  const p = { ...(action.payload as Partial<CreateEventParams>) };
+
+  if ((!p.clubId || p.clubId === "club-1") && isSupabaseConfigured && userId) {
+    try {
+      const { data: memberRows } = await supabase
+        .from("club_members")
+        .select("club_id")
+        .eq("user_id", userId)
+        .limit(1);
+      if (memberRows && memberRows.length > 0 && memberRows[0].club_id) {
+        p.clubId = String(memberRows[0].club_id);
+      }
+    } catch {
+      // Ignore and continue with checks
+    }
+  }
 
   if (!p.clubId || !p.title) {
     return {
@@ -338,22 +355,51 @@ export async function tool_assign_task(
     memberId?: string;
     memberName?: string;
     memberRole?: string;
+    assigneeName?: string;
+    assigneeRole?: string;
+    assigneeMemberId?: string;
   };
 
-  if (!p.taskId || !p.eventId) {
+  const finalTaskId = p.taskId;
+  let finalEventId = p.eventId;
+  const finalMemberName = p.assigneeName || p.memberName || "Unassigned";
+  const finalMemberRole = p.assigneeRole || p.memberRole || "Member";
+  const finalMemberId = p.assigneeMemberId || p.memberId;
+
+  if (!finalTaskId) {
     return {
       success: false,
-      error: "assign_task requires taskId and eventId in action.payload.",
+      error: "assign_task requires taskId in action.payload.",
     };
   }
 
+  // If eventId is missing, retrieve it from the tasks table
+  if ((!finalEventId || finalEventId === "club-general") && isSupabaseConfigured) {
+    try {
+      const { data: taskRow } = await supabase
+        .from("tasks")
+        .select("event_id")
+        .eq("id", finalTaskId)
+        .maybeSingle();
+      if (taskRow?.event_id) {
+        finalEventId = String(taskRow.event_id);
+      }
+    } catch {
+      // Continue with current eventId
+    }
+  }
+
+  if (!finalEventId) {
+    finalEventId = "club-general";
+  }
+
   const { success, error } = await updateEventTaskAssigneeInSupabase(
-    p.taskId,
-    p.eventId,
+    finalTaskId,
+    finalEventId,
     {
-      name: p.memberName,
-      role: p.memberRole,
-      memberId: p.memberId,
+      name: finalMemberName,
+      role: finalMemberRole,
+      memberId: finalMemberId,
     }
   );
 
@@ -363,7 +409,7 @@ export async function tool_assign_task(
 
   return {
     success: true,
-    data: { taskId: p.taskId, assignedTo: p.memberName ?? "Unassigned" },
+    data: { taskId: finalTaskId, assignedTo: finalMemberName },
   };
 }
 

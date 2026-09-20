@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/lib/use-auth";
 import { fetchUserClubs, fetchClubMembers, updateMemberRoleInSupabase } from "@/lib/clubs";
 import { fetchClubEvents } from "@/lib/events";
+import { fetchClubTasks } from "@/lib/tasks";
+import { isOverdue } from "@/lib/date-utils";
 import { AuthScreen } from "@/components/auth-screen";
 import { Sidebar } from "@/components/sidebar";
 import { Header } from "@/components/header";
@@ -69,7 +71,6 @@ export default function Home() {
   const [activeClub, setActiveClub] = useState<Club | null>(null);
   const [events, setEvents] = useState<ClubEvent[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
 
   // Fetch user's clubs from Supabase when authenticated (initial load & refresh)
   useEffect(() => {
@@ -159,6 +160,27 @@ export default function Home() {
     };
   }, [activeClub?.id]);
 
+  // Fetch tasks for the active club from Supabase
+  useEffect(() => {
+    const clubId = activeClub?.id;
+    if (!clubId) return;
+
+    let isMounted = true;
+
+    fetchClubTasks(clubId).then(({ tasks: fetchedTasks, error }) => {
+      if (!isMounted) return;
+      if (error) {
+        console.error("Failed to load club tasks:", error);
+      } else {
+        setTasks(fetchedTasks);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeClub?.id]);
+
   // Derived data
   const activeClubMembers = activeClub
     ? members.filter((m) => m.clubId === activeClub.id)
@@ -168,6 +190,66 @@ export default function Home() {
     ? events.filter((e) => e.clubId === activeClub.id)
     : [];
   const openTasksCount = tasks.filter((t) => !t.completed).length;
+
+  // Track user-dismissed / read inbox notifications
+  const [readInboxIds, setReadInboxIds] = useState<Set<string>>(new Set());
+
+  // Dynamically derive inbox items from real event/club tasks
+  const inboxItems = useMemo<InboxItem[]>(() => {
+    const items: InboxItem[] = [];
+    const activeTasks = tasks.filter((t) => !t.completed && t.status !== "Done");
+
+    for (const task of activeTasks) {
+      // 1. Overdue tasks
+      if (isOverdue(task.deadline || task.dueText)) {
+        const id = `inbox-overdue-${task.id}`;
+        items.push({
+          id,
+          title: `Overdue Task Alert: "${task.title}"`,
+          sender: "Eventra Sentinel",
+          time: task.dueText || task.deadline || "Overdue",
+          unread: !readInboxIds.has(id),
+          type: "ai_flag",
+          summary: `This task was scheduled to be completed by ${task.deadline || task.dueText || "now"} but remains unfinished. Currently assigned to ${task.assigneeName}.`,
+        });
+      }
+
+      // 2. Unassigned High/Urgent tasks
+      const isUnassigned =
+        !task.assigneeName ||
+        task.assigneeName === "Unassigned" ||
+        task.assigneeName.toLowerCase() === "unassigned";
+      if (isUnassigned && (task.priority === "High" || task.priority === "Urgent")) {
+        const id = `inbox-unassigned-${task.id}`;
+        items.push({
+          id,
+          title: `Unassigned Critical Task: "${task.title}"`,
+          sender: "Eventra AI",
+          time: "Action Needed",
+          unread: !readInboxIds.has(id),
+          type: "approval",
+          summary: `High priority task in "${task.eventId || "General"}" has no assigned owner. Open Eventra AI to evaluate team workloads and assign the best available member.`,
+        });
+      }
+
+      // 3. Blocked tasks
+      if (task.status === "Blocked") {
+        const id = `inbox-blocked-${task.id}`;
+        items.push({
+          id,
+          title: `Blocked Task Alert: "${task.title}"`,
+          sender: "Eventra AI",
+          time: "Blocked",
+          unread: !readInboxIds.has(id),
+          type: "compliance",
+          summary: `This task is marked as Blocked due to unfinished prerequisite dependencies.`,
+        });
+      }
+    }
+
+    return items;
+  }, [tasks, readInboxIds]);
+
   const unreadInboxCount = inboxItems.filter((i) => i.unread).length;
 
   const currentSidebarTab = isClubsListOpen
@@ -195,7 +277,7 @@ export default function Home() {
   };
 
   const handleMarkAllRead = () => {
-    setInboxItems((prev) => prev.map((item) => ({ ...item, unread: false })));
+    setReadInboxIds(new Set(inboxItems.map((item) => item.id)));
   };
 
   const handleRetryLoadMembers = () => {
@@ -360,6 +442,7 @@ export default function Home() {
   const handleSignOut = async () => {
     setClubs([]);
     setActiveClub(null);
+    setTasks([]);
     setClubsError(null);
     setLoadingClubs(true);
     await auth.signOut();
@@ -672,6 +755,7 @@ export default function Home() {
                 onAddTask={handleAddTask}
                 onUpdateTaskStatus={handleUpdateTaskStatus}
                 onToggleTaskDone={handleToggleTaskDone}
+                onEventsUpdated={handleRetryLoadEvents}
               />
             ) : activeClub ? (
               <>
@@ -760,6 +844,7 @@ export default function Home() {
           setEventraInitialPrompt(undefined);
         }}
         event={activeEvent ?? undefined}
+        club={activeClub}
         currentUserId={auth.user?.id}
         teamMembers={activeClubMembers.map((m) => ({
           id: m.id,
@@ -778,6 +863,7 @@ export default function Home() {
             });
           }
         }}
+        onEventsUpdated={handleRetryLoadEvents}
         initialPrompt={eventraInitialPrompt}
       />
 

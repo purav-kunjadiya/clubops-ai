@@ -236,7 +236,7 @@ function buildCreateEventPlan(
       leadName: "Event Lead",
       leadRole: "Event Lead",
     },
-    status: "proposed",
+    status: "pending_approval",
   };
 
   const reasoningSummary = `### Event Plan
@@ -339,7 +339,7 @@ function buildCreateTasksPlan(
         status: "Todo",
         dependencies: [],
       },
-      status: "proposed",
+      status: "pending_approval",
     };
   });
 
@@ -742,6 +742,7 @@ export async function executeApprovedActions(
   plan: AgentPlan,
   options: {
     userId?: string;
+    clubId?: string;
     existingTasks?: TaskItem[];
   } = {}
 ): Promise<AgentPlan> {
@@ -791,6 +792,11 @@ export async function executeApprovedActions(
 
       switch (action.type) {
         case "CREATE_EVENT":
+          if (!action.payload.clubId || action.payload.clubId === "club-1") {
+            if (options.clubId) {
+              action.payload.clubId = options.clubId;
+            }
+          }
           result = await tool_create_event(action, options.userId);
           if (result.success && result.data?.id) {
             newlyCreatedEventId = result.data.id;
@@ -824,6 +830,16 @@ export async function executeApprovedActions(
           const reqTaskId = String(action.payload.taskId || "").toLowerCase().trim();
           if (taskTitleToIdMap.has(reqTaskId)) {
             action.payload.taskId = taskTitleToIdMap.get(reqTaskId);
+          }
+          if (!action.payload.eventId) {
+            const matched = options.existingTasks?.find(
+              (t) => t.id === action.payload.taskId || t.title.toLowerCase() === reqTaskId
+            );
+            if (matched?.eventId) {
+              action.payload.eventId = matched.eventId;
+            } else if (newlyCreatedEventId) {
+              action.payload.eventId = newlyCreatedEventId;
+            }
           }
           result = await tool_assign_task(action);
           break;

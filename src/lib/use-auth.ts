@@ -55,9 +55,11 @@ export function useAuth() {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     if (!isSupabaseConfigured) {
-      // Demo fallback: create a synthetic user object
-      const demoUser = { id: `demo-${Date.now()}`, email } as User;
-      setState({ user: demoUser, loading: false, error: null });
+      setState((prev) => ({
+        ...prev,
+        loading: false,
+        error: "Supabase connection is required. Please check your environment variables.",
+      }));
       return;
     }
 
@@ -91,8 +93,11 @@ export function useAuth() {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     if (!isSupabaseConfigured) {
-      const demoUser = { id: `demo-${Date.now()}`, email } as User;
-      setState({ user: demoUser, loading: false, error: null });
+      setState((prev) => ({
+        ...prev,
+        loading: false,
+        error: "Supabase connection is required. Please check your environment variables.",
+      }));
       return;
     }
 
