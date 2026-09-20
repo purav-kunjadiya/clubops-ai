@@ -120,7 +120,35 @@ function generateHeuristicResponse(
   );
   const eventName = event?.title ? `"${event.title}"` : "this event";
 
-  // ─── 1. OVERDUE ────────────────────────────────────────────────────────────
+  // ─── 1. EVENT NAME ─────────────────────────────────────────────────────────
+  if (
+    query.includes("name of this event") ||
+    query.includes("name of the event") ||
+    query.includes("event name") ||
+    query.includes("what is the name") ||
+    query.includes("what is this event") ||
+    query.includes("what event is this") ||
+    query.includes("event's name")
+  ) {
+    if (event?.title) {
+      return `The event is **${event.title}**.`;
+    }
+    return "No active event is currently selected.";
+  }
+
+  // ─── 2. EVENT CREATION REQUEST ──────────────────────────────────────────────
+  if (
+    query.includes("make another event") ||
+    query.includes("create an event") ||
+    query.includes("create event") ||
+    query.includes("new event") ||
+    query.includes("plan another event") ||
+    query.includes("plan an event")
+  ) {
+    return `Sure! What should I name the new event, and what date should it be on? (For example: *"Plan Tech Fest on 15 October 2026"*).`;
+  }
+
+  // ─── 3. OVERDUE ────────────────────────────────────────────────────────────
   if (
     query.includes("overdue") ||
     query.includes("past due") ||
@@ -142,15 +170,26 @@ function generateHeuristicResponse(
     );
   }
 
-  // ─── 2. UPCOMING / DEADLINES ───────────────────────────────────────────────
+  // ─── 4. UPCOMING / DEADLINES / DATE ───────────────────────────────────────
   if (
+    query.includes("when is") ||
+    query.includes("when is this event") ||
+    query.includes("when is it") ||
+    query.includes("event date") ||
     query.includes("upcoming") ||
     query.includes("deadline") ||
     query.includes("due soon") ||
     query.includes("this week") ||
     query.includes("next few days") ||
-    query.includes("summarize") && query.includes("deadline")
+    (query.includes("summarize") && query.includes("deadline"))
   ) {
+    if (query.includes("when is") || query.includes("when is it") || query.includes("event date")) {
+      if (event?.date) {
+        return `The event **${event.title || "this event"}** is scheduled for **${formatDeadline(event.date)}**${event.time ? ` at ${event.time}` : ""}.`;
+      }
+      return `No date has been scheduled yet for ${eventName}.`;
+    }
+
     const allWithDeadlines = openTasks
       .filter((t) => {
         const d = t.deadline || t.dueText;
@@ -196,7 +235,7 @@ function generateHeuristicResponse(
     return reply.trim();
   }
 
-  // ─── 3. WORKLOAD / WHO HAS THE MOST ───────────────────────────────────────
+  // ─── 5. WORKLOAD / WHO HAS THE MOST ───────────────────────────────────────
   if (
     query.includes("workload") ||
     query.includes("most tasks") ||
@@ -267,7 +306,7 @@ function generateHeuristicResponse(
     return reply;
   }
 
-  // ─── 4. RISKS / WARNINGS ──────────────────────────────────────────────────
+  // ─── 6. RISKS / WARNINGS ──────────────────────────────────────────────────
   if (
     query.includes("risk") ||
     query.includes("warning") ||
@@ -304,7 +343,7 @@ function generateHeuristicResponse(
     return reply;
   }
 
-  // ─── 5. PENDING / OPEN TASKS ──────────────────────────────────────────────
+  // ─── 7. PENDING / OPEN TASKS ──────────────────────────────────────────────
   if (
     query.includes("pending") ||
     (query.includes("task") && query.includes("open")) ||
@@ -344,7 +383,7 @@ function generateHeuristicResponse(
     return reply.trim();
   }
 
-  // ─── 6. UNASSIGNED TASKS ──────────────────────────────────────────────────
+  // ─── 8. UNASSIGNED TASKS ──────────────────────────────────────────────────
   if (
     query.includes("unassigned") ||
     query.includes("no owner") ||
@@ -376,11 +415,11 @@ function generateHeuristicResponse(
     return reply;
   }
 
-  // ─── 7. TEAM / MEMBERS ────────────────────────────────────────────────────
+  // ─── 9. TEAM / MEMBERS ────────────────────────────────────────────────────
   if (
     query.includes("team") ||
     query.includes("member") ||
-    query.includes("who is") ||
+    query.includes("who is on") ||
     query.includes("who are") ||
     query.includes("involved") ||
     query.includes("staff") ||
@@ -408,12 +447,13 @@ function generateHeuristicResponse(
     ).trim();
   }
 
-  // ─── 8. STATUS / PROGRESS / OVERVIEW ──────────────────────────────────────
+  // ─── 10. EXPLICIT SUMMARY / PROGRESS / OVERVIEW ───────────────────────────
   if (
+    query.includes("summarize") ||
+    query.includes("summary") ||
+    query.includes("overview") ||
     query.includes("status") ||
     query.includes("progress") ||
-    query.includes("overview") ||
-    query.includes("summary") ||
     query.includes("how is") ||
     query.includes("how are")
   ) {
@@ -454,7 +494,7 @@ function generateHeuristicResponse(
     return reply;
   }
 
-  // ─── 9. FOCUS / PRIORITY / WHAT SHOULD WE DO ──────────────────────────────
+  // ─── 11. FOCUS / PRIORITY / WHAT SHOULD WE DO ──────────────────────────────
   if (
     query.includes("focus") ||
     query.includes("priorit") ||
@@ -706,44 +746,8 @@ function generateHeuristicResponse(
     return reply.trim();
   }
 
-  // ─── DEFAULT: Intelligent context summary ─────────────────────────────────
-  const pct =
-    tasks.length > 0
-      ? Math.round((completedTasks.length / tasks.length) * 100)
-      : 0;
-
-  let reply = `🤖 **Eventra AI — Event Summary for ${eventName}**\n\n`;
-
-  reply += `**📊 Task Status:** ${completedTasks.length}/${tasks.length} completed (${pct}%)`;
-  if (overdueTasks.length > 0) {
-    reply += ` | ⚠️ ${overdueTasks.length} overdue`;
-  }
-  if (unassignedTasks.length > 0) {
-    reply += ` | 📌 ${unassignedTasks.length} unassigned`;
-  }
-  reply += "\n";
-
-  reply += `**👥 Team:** ${teamMembers.length} member${teamMembers.length !== 1 ? "s" : ""}`;
-  const overloaded = workloads.filter(
-    (w) => w.workloadState === "Overloaded" || w.workloadState === "High"
-  );
-  if (overloaded.length > 0) {
-    reply += ` | ${overloaded.length} with high workload`;
-  }
-  reply += "\n";
-
-  reply += `**⚠️ Risks:** ${risks.length > 0 ? `${risks.length} active risk${risks.length !== 1 ? "s" : ""}` : "None detected"}\n\n`;
-
-  reply += `You can ask me things like:\n`;
-  reply += `• "What tasks are overdue?"\n`;
-  reply += `• "Who has the highest workload?"\n`;
-  reply += `• "What risks should I be aware of?"\n`;
-  reply += `• "What tasks are unassigned?"\n`;
-  reply += `• "What should we focus on today?"\n`;
-  reply += `• "Summarize upcoming deadlines"\n`;
-  reply += `• "Show me the event team"`;
-
-  return reply;
+  // ─── DEFAULT: Ambiguity Guidance ──────────────────────────────────────────
+  return "I'm not sure what you mean yet. You can ask me about this event's tasks, team, deadlines, risks, or ask me to create/update something.";
 }
 
 export const GEMINI_EVENTRA_TOOLS = [
@@ -1303,7 +1307,7 @@ INSTRUCTIONS FOR EVENTRA AI CONVERSATIONAL ASSISTANT & AGENT:
     }
 
     return NextResponse.json({
-      answer: rawText || "Here is your operational summary.",
+      answer: rawText || generateHeuristicResponse(trimmedPrompt, contextData),
       proposedPlan: null,
       usedGeminiTools: true,
     });
